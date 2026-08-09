@@ -7,7 +7,7 @@
  "url": "https://github.com/driin0/zoraxy-fqdn-whitelist-sync",
  "type": 1,
  "version_major": 1,
- "version_minor": 0,
+ "version_minor": 1,
  "version_patch": 0,
  "static_capture_paths": null,
  "static_capture_ingress": "",

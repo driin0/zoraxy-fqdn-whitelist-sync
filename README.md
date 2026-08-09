@@ -28,7 +28,13 @@ up on its own.
 
 ## Requirements
 
-Zoraxy v3.3.3 or later. Verified against v3.3.3.
+Zoraxy v3.3.3 or later. Verified against v3.3.3 and v3.3.4-rc2.
+
+Builds are published for `linux/amd64`, `linux/386`, `linux/arm`,
+`linux/arm64`, `linux/mipsle`, `linux/riscv64` and `windows/amd64` — the
+platforms Zoraxy itself ships for. Only the two Linux builds it was developed
+on, `amd64` and `arm64`, have been run against a live Zoraxy; the rest are the
+same source cross-compiled, with no platform-specific code, but untested.
 
 ## Install
 
@@ -40,23 +46,24 @@ architecture, makes it executable and places it in its own plugin folder.
 
 ### Manually
 
-Download the `.tar.gz` for your architecture from the
+Download the binary for your architecture from the
 [latest release](https://github.com/driin0/zoraxy-fqdn-whitelist-sync/releases/latest)
-and extract it into Zoraxy's plugin directory, keeping the folder name:
+and put it in Zoraxy's plugin directory, inside a folder **named after the
+binary** — Zoraxy runs the file whose name matches its folder:
 
     plugins/
     └── fqdn-whitelist-sync/
-        ├── start.sh
-        ├── fqdn-whitelist-sync.bin
-        └── icon.png
+        └── fqdn-whitelist-sync
 
-Zoraxy looks for an executable named after the folder, then for `start.sh`, so
-this layout starts via the script. The archive already carries the executable
-bit; if your extraction tool drops it, restore it once with
-`chmod +x start.sh`. Then restart Zoraxy.
+Make it executable (`chmod +x fqdn-whitelist-sync`) and restart Zoraxy. Drop
+[`icon.png`](icon.png) beside it if you want the icon in the plugin manager;
+the plugin manager fetches it for you.
 
-Later updates only need the `.bin` replaced — `start.sh` re-applies the
-executable bit on each launch.
+To update, replace the binary, re-apply `chmod +x`, and restart Zoraxy.
+
+If you installed manually and later switch to the plugin manager, remove your
+folder first: the manager creates its own, and two copies of the same plugin ID
+will collide.
 
 ## Configure
 

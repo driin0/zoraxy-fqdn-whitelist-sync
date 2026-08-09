@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	plugin "github.com/driin0/zoraxy-fqdn-whitelist-sync/mod/zoraxy_plugin"
@@ -30,7 +32,7 @@ func main() {
 		Description:   "Keeps access-control whitelists in sync with the resolved IPs of configured FQDNs",
 		Type:          plugin.PluginType_Utilities,
 		VersionMajor:  1,
-		VersionMinor:  0,
+		VersionMinor:  1,
 		VersionPatch:  0,
 		UIPath:        UI_PATH,
 		PermittedAPIEndpoints: []plugin.PermittedAPIEndpoint{
@@ -61,6 +63,33 @@ func main() {
 
 	uiRouter := plugin.NewPluginEmbedUIRouter(PLUGIN_ID, &content, WEB_ROOT, UI_PATH)
 	uiRouter.AttachHandlerToMux(nil)
+
+	// Shutting down quietly takes both halves of this.
+	//
+	// Zoraxy stops a plugin by GETting <UIPath>/term, and without a handler
+	// there it logs "does not support termination request". The SDK's handler
+	// answers 200 and then exits 100ms later, once the response is on the wire.
+	uiRouter.RegisterTerminateHandler(func() {
+		fmt.Println("FQDN Whitelist Sync terminating")
+	}, nil)
+
+	// That alone is not enough: Zoraxy sends SIGTERM immediately after the GET
+	// returns, without waiting (see StopPlugin in mod/plugins/lifecycle.go), so
+	// the signal always wins the race against that 100ms timer. Go's default
+	// for an unhandled SIGTERM is to die by signal, which Zoraxy reports as
+	// "encounted a fatal error ... Disabling plugin" and then, five seconds
+	// later, "failed to stop gracefully, killing it".
+	//
+	// Exiting 0 on the signal turns that into an ordinary stop. Nothing needs
+	// flushing on the way out: config.json is written atomically on every
+	// change, never held in memory pending a save.
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
+	go func() {
+		<-sigCh
+		fmt.Println("FQDN Whitelist Sync stopping")
+		os.Exit(0)
+	}()
 
 	go runReconcileLoop(client, NewResolver, store, status, trigger)
 
