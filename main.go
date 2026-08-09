@@ -29,8 +29,8 @@ func main() {
 		URL:           "https://github.com/driin0/zoraxy-fqdn-whitelist-sync",
 		Description:   "Keeps access-control whitelists in sync with the resolved IPs of configured FQDNs",
 		Type:          plugin.PluginType_Utilities,
-		VersionMajor:  0,
-		VersionMinor:  6,
+		VersionMajor:  1,
+		VersionMinor:  0,
 		VersionPatch:  0,
 		UIPath:        UI_PATH,
 		PermittedAPIEndpoints: []plugin.PermittedAPIEndpoint{
