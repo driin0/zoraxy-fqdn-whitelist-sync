@@ -274,6 +274,20 @@ $(function () {
 // If a future release changes any of them, re-verify -- the likely outcome is
 // that this quietly stops working.
 //
+// Measured end to end on 2026-08-09 with the plugin installed in the official
+// Docker image, on both v3.3.3 and v3.3.4-rc2, this panel needing 940px:
+//
+//   sidebar expanded   the floor is 1122px, the panel already fits and this
+//                      code changes nothing.
+//   sidebar collapsed  the floor drops to 642px, and 298px of the panel would
+//                      be cut off. The frame was grown to exactly 940px, with
+//                      no inner scrollbar.
+//
+// The floor tracks how the operator left the sidebar, not the Zoraxy version:
+// collapsing the menu groups is enough to trigger it on any version. That is
+// the case this exists for, and it is why the code reads back the height
+// Zoraxy set instead of reimplementing the formula above.
+//
 // Two deliberate restrictions keep this simple enough to reason about:
 //
 //   It never fights Zoraxy for the frame. Whenever the frame is a size we
