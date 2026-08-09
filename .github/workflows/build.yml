@@ -1,0 +1,64 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - run: go vet ./...
+      - run: go test ./...
+      - name: .introspect must match what the binary reports
+        run: go run . -introspect | diff -u .introspect -
+
+  release:
+    needs: test
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Build both artefact forms
+        run: |
+          set -eu
+          # The plugin store derives the asset name from the plugin ID by
+          # keeping only the last dot-separated segment (see tools/dirupdate2
+          # in aroz-online/zoraxy-official-plugins), so the bare binary must be
+          # fqdn_whitelist_sync_linux_<arch>, not the full reverse-DNS ID.
+          ASSET=fqdn_whitelist_sync
+          NAME=fqdn-whitelist-sync
+          mkdir -p out
+          for arch in amd64 arm64; do
+            # Bare binary: what .releaseurl + the derived name resolves to.
+            CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -trimpath \
+              -o "out/${ASSET}_linux_${arch}" .
+
+            # Bundle: Zoraxy's documented manual layout, plugins/<name>/.
+            rm -rf pkg && mkdir -p "pkg/$NAME"
+            cp "out/${ASSET}_linux_${arch}" "pkg/$NAME/$NAME.bin"
+            cp icon.png "pkg/$NAME/icon.png"
+            printf '%s\n' \
+              '#!/bin/sh' \
+              '# Zoraxy plugin entry point. Update by replacing only the .bin file.' \
+              'cd "$(dirname "$0")" || exit 1' \
+              'chmod +x ./fqdn-whitelist-sync.bin 2>/dev/null' \
+              'exec ./fqdn-whitelist-sync.bin "$@"' > "pkg/$NAME/start.sh"
+            chmod +x "pkg/$NAME/start.sh"
+            tar -C pkg -czf "out/${NAME}_linux_${arch}.tar.gz" "$NAME"
+          done
+          ls -l out
+      - uses: softprops/action-gh-release@v3
+        with:
+          files: out/*
