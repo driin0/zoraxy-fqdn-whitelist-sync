@@ -1,0 +1,41 @@
+{
+ "id": "io.github.driin0.zoraxy.fqdn_whitelist_sync",
+ "name": "FQDN Whitelist Sync",
+ "author": "driin0",
+ "author_contact": "driin0@users.noreply.github.com",
+ "description": "Keeps access-control whitelists in sync with the resolved IPs of configured FQDNs",
+ "url": "https://github.com/driin0/zoraxy-fqdn-whitelist-sync",
+ "type": 1,
+ "version_major": 0,
+ "version_minor": 6,
+ "version_patch": 0,
+ "static_capture_paths": null,
+ "static_capture_ingress": "",
+ "dynamic_capture_sniff": "",
+ "dynamic_capture_ingress": "",
+ "ui_path": "/ui",
+ "subscription_path": "",
+ "subscriptions_events": null,
+ "permitted_api_endpoints": [
+  {
+   "method": "GET",
+   "endpoint": "/plugin/api/access/list",
+   "reason": "List access rules for the UI dropdown and whitelist-mode warning"
+  },
+  {
+   "method": "GET",
+   "endpoint": "/plugin/api/whitelist/list",
+   "reason": "Read the current whitelist to reconcile"
+  },
+  {
+   "method": "POST",
+   "endpoint": "/plugin/api/whitelist/ip/add",
+   "reason": "Add resolved FQDN IPs to the whitelist"
+  },
+  {
+   "method": "POST",
+   "endpoint": "/plugin/api/whitelist/ip/remove",
+   "reason": "Remove stale FQDN IPs from the whitelist"
+  }
+ ]
+}
