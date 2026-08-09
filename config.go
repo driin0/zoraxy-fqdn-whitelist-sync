@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -47,6 +48,9 @@ type Config struct {
 
 func LoadConfig(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return createDefaultConfig(path)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -84,6 +88,27 @@ func LoadConfig(path string) (*Config, error) {
 		return nil, fmt.Errorf("invalid unroutable_cidrs: %w", err)
 	}
 	return &cfg, nil
+}
+
+// createDefaultConfig writes a starting config so a plugin installed as a bare
+// binary can run. The rule list is empty on purpose: with nothing to sync the
+// plugin idles harmlessly until it is configured from its UI, which is safer
+// than guessing at rules on someone's proxy.
+func createDefaultConfig(path string) (*Config, error) {
+	cfg := &Config{
+		IntervalSeconds: DefaultIntervalSeconds,
+		GraceSeconds:    DefaultGraceSeconds,
+		UnroutableCIDRs: append([]string(nil), DefaultUnroutableCIDRs...),
+		Rules:           []RuleConfig{},
+	}
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	if err := os.WriteFile(path, append(data, '\n'), 0o644); err != nil {
+		return nil, fmt.Errorf("creating default config %q: %w", path, err)
+	}
+	return cfg, nil
 }
 
 // hasJSONKey reports whether the top-level object contains key.

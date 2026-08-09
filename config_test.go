@@ -359,3 +359,51 @@ func TestSetUnroutableCIDRsPersistsEmptyList(t *testing.T) {
 		t.Errorf("reloaded = %v, want the empty list to survive a restart", reloaded.UnroutableCIDRs)
 	}
 }
+
+// A plugin installed from the plugin manager arrives as a bare binary with no
+// config beside it. It has to write one and start, not exit.
+func TestLoadConfigCreatesTheDefaultWhenTheFileIsMissing(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.IntervalSeconds != DefaultIntervalSeconds {
+		t.Errorf("IntervalSeconds = %d, want %d", cfg.IntervalSeconds, DefaultIntervalSeconds)
+	}
+	if cfg.GraceSeconds != DefaultGraceSeconds {
+		t.Errorf("GraceSeconds = %d, want %d", cfg.GraceSeconds, DefaultGraceSeconds)
+	}
+	if len(cfg.Rules) != 0 {
+		t.Errorf("Rules = %v, want none — a fresh install idles until configured", cfg.Rules)
+	}
+	if !reflect.DeepEqual(cfg.UnroutableCIDRs, DefaultUnroutableCIDRs) {
+		t.Errorf("UnroutableCIDRs = %v, want the defaults", cfg.UnroutableCIDRs)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("the config file was not written: %v", err)
+	}
+
+	// The file it writes must load back identically, or the defaults drift the
+	// first time the UI saves.
+	reloaded, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("reloading the written default failed: %v", err)
+	}
+	if !reflect.DeepEqual(cfg, reloaded) {
+		t.Errorf("reloaded = %+v, want %+v", reloaded, cfg)
+	}
+}
+
+// Creating a missing config must not turn into silently replacing a broken
+// one: a corrupt file is an operator problem, not a reason to lose settings.
+func TestLoadConfigStillRejectsAMalformedFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte("{ not json"), 0o644); err != nil {
+		t.Fatalf("setting up the fixture failed: %v", err)
+	}
+	if _, err := LoadConfig(path); err == nil {
+		t.Fatal("want an error for malformed JSON, got nil — a corrupt config must never be silently replaced")
+	}
+}
