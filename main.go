@@ -33,7 +33,7 @@ func main() {
 		Type:          plugin.PluginType_Utilities,
 		VersionMajor:  1,
 		VersionMinor:  1,
-		VersionPatch:  0,
+		VersionPatch:  1,
 		UIPath:        UI_PATH,
 		PermittedAPIEndpoints: []plugin.PermittedAPIEndpoint{
 			{Method: http.MethodGet, Endpoint: "/plugin/api/access/list", Reason: "List access rules for the UI dropdown and whitelist-mode warning"},
@@ -98,6 +98,30 @@ func main() {
 	http.ListenAndServe(addr, nil)
 }
 
+// waitForZoraxyAPI blocks until Zoraxy's plugin API answers, or timeout
+// expires. It probes the default access rule, which always exists.
+//
+// The timeout is a bound on the damage, not an expectation: on a healthy start
+// this returns in well under a second. If Zoraxy really is unreachable the loop
+// proceeds anyway and reports the failure like any other, rather than idling
+// forever in a state the UI cannot explain.
+func waitForZoraxyAPI(client ZoraxyClient, timeout time.Duration) {
+	deadline := time.Now().Add(timeout)
+	delay := 100 * time.Millisecond
+	for {
+		if _, err := client.ListWhitelistIP("default"); err == nil {
+			return
+		}
+		if !time.Now().Before(deadline) {
+			return
+		}
+		time.Sleep(delay)
+		if delay < 2*time.Second {
+			delay *= 2
+		}
+	}
+}
+
 // runReconcileLoop runs an immediate first reconcile, then repeats every
 // interval (re-read from the store each cycle so UI edits take effect) and
 // whenever a trigger arrives. It blocks; run it in a goroutine.
@@ -106,6 +130,14 @@ func main() {
 // each cycle would reset the per-FQDN failure clocks and the grace window
 // would never expire.
 func runReconcileLoop(client ZoraxyClient, newResolver func(servers []string) Resolver, store *ConfigStore, status *StatusStore, trigger <-chan struct{}) {
+	// Zoraxy launches its plugins while it is still starting up, before its own
+	// API port is listening, so reconciling immediately fails with "connection
+	// refused" — and that error then sits in the UI until the next tick, which
+	// is a whole interval away and five minutes on a slow poll. Nothing is
+	// actually wrong, so publishing it would be noise the operator has to learn
+	// to ignore.
+	waitForZoraxyAPI(client, 30*time.Second)
+
 	reconciler := NewReconciler(client, nil, 0)
 	runOnce := func() {
 		cfg := store.Snapshot()

@@ -94,6 +94,14 @@ func (c *fakeClient) removedCopy() []string {
 	return out
 }
 
+// setListErr changes what ListWhitelistIP returns while the reconcile loop is
+// already running, so a test can model Zoraxy's API coming up late.
+func (c *fakeClient) setListErr(err error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.listErr = err
+}
+
 func newFakeClient() *fakeClient {
 	return &fakeClient{entries: map[string][]WhitelistEntry{}}
 }

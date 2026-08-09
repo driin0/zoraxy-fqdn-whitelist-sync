@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -158,6 +159,73 @@ func TestReconcileLoopAppliesTheConfiguredUnroutableCIDRs(t *testing.T) {
 			t.Fatalf("added = %v, want exactly [1.2.3.4/32] — the sentinel must be filtered out", client.addedCopy())
 		}
 		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// Zoraxy launches its plugins during its own startup, before its API port is
+// listening. An immediate first reconcile fails with "connection refused" and
+// leaves that error in the UI until the next tick — a whole interval later,
+// which is five minutes on a slow poll. The loop must wait for the API rather
+// than publish a failure it knows will clear itself.
+func TestReconcileLoopWaitsForTheZoraxyAPIBeforeTheFirstCycle(t *testing.T) {
+	client := newFakeClient()
+	client.setListErr(fmt.Errorf("dial tcp 127.0.0.1:8000: connect: connection refused"))
+
+	cfg := &Config{
+		// Long interval: if the loop published a failed first cycle, no later
+		// tick would rescue it within this test.
+		IntervalSeconds: 3600,
+		Rules:           []RuleConfig{{RuleID: "default", FQDNs: []string{"a.example.com"}}},
+	}
+	store := NewConfigStore(cfg, filepath.Join(t.TempDir(), "config.json"))
+	status := &StatusStore{}
+	newResolver := func([]string) Resolver {
+		return &fakeResolver{m: map[string][]string{"a.example.com": {"1.2.3.4"}}}
+	}
+
+	go runReconcileLoop(client, newResolver, store, status, make(chan struct{}, 1))
+
+	// Zoraxy finishes starting up shortly after the plugin does.
+	time.Sleep(300 * time.Millisecond)
+	client.setListErr(nil)
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		lastRun, results := status.Snapshot()
+		if lastRun.IsZero() {
+			time.Sleep(10 * time.Millisecond)
+			continue
+		}
+		if len(results) != 1 {
+			t.Fatalf("results = %v, want one rule", results)
+		}
+		if len(results[0].Errors) != 0 {
+			t.Fatalf("the first published cycle carried %v, want no errors — it should have waited for the API", results[0].Errors)
+		}
+		if !reflect.DeepEqual(results[0].Added, []string{"1.2.3.4/32"}) {
+			t.Fatalf("Added = %v, want the address synced on the first cycle", results[0].Added)
+		}
+		return
+	}
+	t.Fatal("the loop never published a cycle")
+}
+
+// The wait must be bounded. If Zoraxy really never answers, the loop has to
+// start anyway and report the failure through the normal path — blocking here
+// forever would leave the UI empty with nothing to explain why.
+func TestWaitForZoraxyAPIGivesUpAfterTheTimeout(t *testing.T) {
+	client := newFakeClient()
+	client.setListErr(fmt.Errorf("dial tcp 127.0.0.1:8000: connect: connection refused"))
+
+	start := time.Now()
+	waitForZoraxyAPI(client, 200*time.Millisecond)
+	elapsed := time.Since(start)
+
+	if elapsed < 200*time.Millisecond {
+		t.Errorf("returned after %v, want it to have waited out the timeout", elapsed)
+	}
+	if elapsed > 3*time.Second {
+		t.Errorf("returned after %v, want it to give up near the 200ms timeout", elapsed)
 	}
 }
 
