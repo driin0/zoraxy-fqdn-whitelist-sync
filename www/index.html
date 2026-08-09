@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>FQDN Whitelist Sync</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="zoraxy.csrf.Token" content="{{.csrfToken}}">
+    <link rel="stylesheet" href="/script/semantic/semantic.min.css">
+    <link rel="stylesheet" href="/main.css">
+    <!-- jQuery must load before darktheme.js: darktheme.js's on-load init uses $() -->
+    <script src="/script/jquery-3.6.0.min.js"></script>
+    <style>
+        /* Match the panel surface the plugin iframe sits on (--theme_bg_primary:
+           #1a1a1e dark / #ffffff light) so bg↔input layering reads like native. */
+        body { background-color: var(--theme_bg_primary); }
+        .fqdnSyncBanner {
+            background: var(--theme_background, linear-gradient(60deg, #4b5563, #1f2937));
+            color: #ffffff;
+            border-radius: 1em;
+            padding: 1em 1.4em;
+            font-weight: bold;
+            margin-bottom: 1.2em;
+        }
+        .fqdnSyncBanner small { font-weight: normal; opacity: 0.85; }
+        td.status-ok { color: #21ba45; font-weight: bold; }
+        td.status-error { color: #db2828; font-weight: bold; }
+        td.status-pending { color: var(--text_color_secondary, #888); }
+        /* Grace: DNS is failing but the last known IPs are still authorised —
+           deliberately neither green nor red, so degradation is not silent. */
+        td.status-grace { color: #f2711c; font-weight: bold; }
+        /* Offline: the DDNS positively reports the device as unreachable.
+           Grey, not red: nothing is broken and no action is needed. */
+        td.status-offline { color: var(--text_color_secondary, #888); font-weight: bold; }
+        #fqdnTable td .graceNote { color: var(--text_color_secondary, #888); font-size: 0.9em; }
+        .muted { color: var(--text_color_secondary, #888); }
+        #fqdnTable td .ipList { line-height: 1.6; }
+        /* Zoraxy's dark theme sets .ui.basic.button:focus { border:none }, so a
+           clicked (still-focused) button looks borderless. ID specificity wins
+           over that rule and keeps our action buttons outlined on focus. */
+        #saveIntervalBtn:focus,
+        #saveDnsServersBtn:focus,
+        #saveGraceBtn:focus,
+        #saveUnroutableBtn:focus,
+        #restoreUnroutableBtn:focus,
+        #refreshBtn:focus,
+        #addFqdnBtn:focus {
+            border: 1px solid var(--button_border_color, #dedede) !important;
+        }
+        /* Zoraxy's dark theme sets .ui.selection.dropdown { border-color:transparent },
+           so the rule selector blends into the background. Restore a visible border. */
+        body.darkTheme #ruleSelector {
+            border-color: var(--button_border_color, #555555) !important;
+        }
+        /* Input + Save on one row, both full-bordered siblings.
+           Semantic's default .ui.button margin:0 .25em 0 0 (not overridden by
+           Zoraxy) would leave Save short of full-width elements — zero it.
+           Scoped to the row, not to one button id, so every Save on such a row
+           keeps the same size and never wraps its icon onto a second line. */
+        .intervalRow { display: flex; gap: 0.5em; align-items: stretch; }
+        .intervalRow input { flex: 1 1 auto; min-width: 0; }
+        .intervalRow > .ui.button {
+            flex: 0 0 auto;
+            margin-right: 0 !important;
+            white-space: nowrap;
+        }
+        /* Crisper dividers in dark (native plain .ui.divider falls back to a faint line) */
+        body.darkTheme .ui.divider { border-top-color: var(--divider_color, #3e3e42) !important; }
+    </style>
+</head>
+<body>
+    <!-- Dark theme right after <body> (jQuery already loaded in <head>) -->
+    <link rel="stylesheet" href="/darktheme.css">
+    <script src="/script/darktheme.js"></script>
+    <script src="/script/semantic/semantic.min.js"></script>
+    <script src="/script/utils.js"></script>
+
+    <div class="standardContainer">
+        <div class="fqdnSyncBanner">
+            <i class="sync alternate icon"></i> FQDN Whitelist Sync
+            <small id="bannerSub">&mdash; keeps a rule's whitelist in sync with resolved FQDN IPs</small>
+        </div>
+
+        <div class="ui stackable grid">
+            <!-- Left: rule selector + global controls -->
+            <div class="five wide column">
+                <h4 class="ui header">Select a rule to configure</h4>
+                <p>Pick an access rule; its whitelist is kept in sync with the FQDNs you add here.</p>
+
+                <div class="ui selection fluid dropdown" id="ruleSelector">
+                    <input type="hidden" name="rule">
+                    <i class="dropdown icon"></i>
+                    <div class="default text">Select a rule</div>
+                    <div class="menu" id="ruleMenu"></div>
+                </div>
+
+                <div class="ui message" id="syncStatusMsg" style="display:none;"></div>
+
+                <div class="ui divider"></div>
+
+                <div class="ui form">
+                    <div class="field">
+                        <label>Refresh interval (seconds)</label>
+                        <!-- input and Save are separate siblings (not a fused
+                             ui action input) so each keeps its own full border -->
+                        <div class="intervalRow">
+                            <input type="number" id="intervalInput" min="15">
+                            <button class="ui basic button" id="saveIntervalBtn">
+                                <i class="save icon"></i> Save
+                            </button>
+                        </div>
+                    </div>
+                    <div class="field">
+                        <label>DNS servers</label>
+                        <div class="intervalRow">
+                            <input type="text" id="dnsServersInput" placeholder="system resolver">
+                            <button class="ui basic button" id="saveDnsServersBtn">
+                                <i class="save icon"></i> Save
+                            </button>
+                        </div>
+                        <p class="muted" style="margin-top:0.4em;">
+                            Comma-separated, tried in order. Empty = system resolver.
+                        </p>
+                    </div>
+                    <div class="field">
+                        <label>Keep last known IPs for (seconds)</label>
+                        <div class="intervalRow">
+                            <input type="number" id="graceInput" min="0">
+                            <button class="ui basic button" id="saveGraceBtn">
+                                <i class="save icon"></i> Save
+                            </button>
+                        </div>
+                        <p class="muted" style="margin-top:0.4em;">
+                            Applies when the DNS server is unreachable. 0 = remove at once.
+                            A name that no longer exists is always removed at once.
+                            Restarting the plugin restarts this window.
+                        </p>
+                    </div>
+                    <div class="field">
+                        <label>Never authorise these ranges</label>
+                        <div class="intervalRow">
+                            <input type="text" id="unroutableInput" placeholder="e.g. 192.0.2.0/24">
+                            <button class="ui basic button" id="saveUnroutableBtn">
+                                <i class="save icon"></i> Save
+                            </button>
+                        </div>
+                        <p class="muted" style="margin-top:0.4em;">
+                            Comma-separated CIDRs. An FQDN resolving only into these is
+                            shown as offline and its previous IP is revoked at once.
+                            Empty = authorise every resolved address.
+                        </p>
+                        <!-- Recovery path: once the stored list is empty the
+                             defaults are no longer in the field, and retyping
+                             ten ranges by hand is the only way back. This fills
+                             the field without saving, so the change is still
+                             reviewed before it takes effect. -->
+                        <button class="ui basic mini button" id="restoreUnroutableBtn" style="margin-top:0.2em;">
+                            <i class="undo icon"></i> Add built-in ranges
+                        </button>
+                    </div>
+                </div>
+                <button class="ui basic fluid button" id="refreshBtn" style="margin-top:0.6em;">
+                    <i class="green refresh icon"></i> Refresh now
+                </button>
+                <p class="muted" id="lastRun" style="margin-top:1em;"></p>
+            </div>
+
+            <!-- Right: selected rule's FQDNs -->
+            <div class="eleven wide column">
+                <h2 id="ruleTitle">FQDN Sync</h2>
+                <p>These FQDNs are resolved on a timer; their IPs are added to this rule's whitelist.</p>
+                <div class="ui divider"></div>
+
+                <h4>Add FQDN</h4>
+                <div class="ui form">
+                    <div class="field">
+                        <label>FQDN</label>
+                        <input type="text" id="fqdnInput" placeholder="host.example.net">
+                    </div>
+                    <button class="ui basic green button" id="addFqdnBtn">
+                        <i class="green add icon"></i> Add FQDN
+                    </button>
+                </div>
+
+                <div class="ui message">
+                    <i class="ui info circle icon"></i> How the sync works
+                    <div class="ui bulleted list">
+                        <div class="item">Each FQDN's A/AAAA records are resolved every interval and added to the whitelist, tagged <code>fqdn-sync:&lt;fqdn&gt;</code>.</div>
+                        <div class="item">Fail-closed: if a name stops resolving, its IPs are removed.</div>
+                        <div class="item">An FQDN resolving into a never-authorise range (e.g. <code>192.0.2.1</code>) is treated as offline: nothing is whitelisted and its previous IP is removed at once.</div>
+                        <div class="item">Manually-added whitelist entries are never touched.</div>
+                    </div>
+                </div>
+
+                <table class="ui unstackable basic celled table">
+                    <thead>
+                        <tr><th>FQDN</th><th>Resolved IPs</th><th>Status</th><th>Remove</th></tr>
+                    </thead>
+                    <tbody id="fqdnTable"></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <script src="./app.js"></script>
+</body>
+</html>

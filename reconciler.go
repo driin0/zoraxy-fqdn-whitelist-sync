@@ -1,0 +1,289 @@
+package main
+
+import (
+	"fmt"
+	"net"
+	"sort"
+	"strings"
+	"time"
+)
+
+const MarkerPrefix = "fqdn-sync:"
+
+type ReconcileResult struct {
+	RuleID   string
+	Resolved map[string][]string // fqdn -> resolved IPs
+	// Grace holds, per FQDN currently inside its grace window with IPs kept, a
+	// human-readable remaining time. It exists so the UI can render "failing
+	// but still authorised" as its own state instead of hiding it in Errors.
+	// Like every other map here it is allocated fresh each cycle and never
+	// mutated after the result is published (see StatusStore.Snapshot).
+	Grace map[string]string
+	// Offline holds, per FQDN, the unroutable addresses it resolved to. Such
+	// an answer is the DDNS service positively reporting the device as
+	// unreachable, so it is neither a success nor a failure and gets a state
+	// of its own — rendering it as ok would be a lie the operator acts on.
+	Offline map[string][]string
+	Added   []string
+	Removed []string
+	Errors  []string
+}
+
+// toCIDR turns a single address into its single-host CIDR form (/32 for IPv4,
+// /128 for IPv6). Zoraxy matches a whitelist entry with either MatchIpWildcard
+// or MatchIpCIDR: the former splits on "." and bails unless it sees exactly
+// four octets, so it can never match an IPv6 address, and the latter needs a
+// CIDR mask to parse at all. A bare IPv6 therefore matches nothing and, under
+// fail-closed, would deny access silently. Writing CIDR satisfies MatchIpCIDR
+// for both families.
+func toCIDR(ip string) string {
+	parsed := net.ParseIP(ip)
+	if parsed == nil {
+		return ip // not an address we can classify; store as-is
+	}
+	if parsed.To4() != nil {
+		return ip + "/32"
+	}
+	return ip + "/128"
+}
+
+// canonicalEntry maps a stored whitelist entry to the form this plugin writes,
+// so a bare address and its /32 (or /128) are treated as one authorisation.
+// Anything that is not a plain address (a real subnet, a wildcard) is left
+// untouched — it is not something we own or would ever write.
+func canonicalEntry(entry string) string {
+	if net.ParseIP(entry) != nil {
+		return toCIDR(entry)
+	}
+	return entry
+}
+
+// ownedAddressIsUnroutable reports whether a canonical entry from ownedBy —
+// always a CIDR host form ("a/32" or "a/128"), since that is the only shape
+// this plugin ever writes — falls in the blocklist. Unroutable.Contains takes
+// a bare address, so the mask is stripped first via net.ParseCIDR; a value
+// that fails to parse as a CIDR (which should not happen for an owned entry)
+// falls back to being tested as-is rather than silently passing the filter.
+func ownedAddressIsUnroutable(u *UnroutableSet, canonical string) bool {
+	host, _, err := net.ParseCIDR(canonical)
+	if err != nil {
+		return u.Contains(canonical)
+	}
+	return u.Contains(host.String())
+}
+
+// Reconciler owns the state that must survive between cycles: how long each
+// FQDN has been failing to resolve. The clock is injectable so grace-window
+// tests do not sleep.
+type Reconciler struct {
+	Client   ZoraxyClient
+	Resolver Resolver
+	Grace    time.Duration
+	// Unroutable filters out addresses that must never be authorised. A nil
+	// set blocks nothing.
+	Unroutable *UnroutableSet
+
+	now          func() time.Time
+	failingSince map[string]time.Time
+}
+
+func NewReconciler(client ZoraxyClient, resolver Resolver, grace time.Duration) *Reconciler {
+	return &Reconciler{
+		Client:       client,
+		Resolver:     resolver,
+		Grace:        grace,
+		now:          time.Now,
+		failingSince: map[string]time.Time{},
+	}
+}
+
+// Rule syncs one access rule's whitelist with the resolved IPs of its
+// configured FQDNs. Only entries whose comment carries MarkerPrefix are
+// treated as plugin-owned and are eligible for removal.
+func (r *Reconciler) Rule(rule RuleConfig) ReconcileResult {
+	result := ReconcileResult{
+		RuleID:   rule.RuleID,
+		Resolved: map[string][]string{},
+		Grace:    map[string]string{},
+		Offline:  map[string][]string{},
+	}
+
+	// 1. Read the current whitelist first: the grace path answers "what were
+	// this FQDN's last known IPs?" from the entries we already own, which is
+	// what keeps the plugin free of its own persistent state.
+	entries, err := r.Client.ListWhitelistIP(rule.RuleID)
+	if err != nil {
+		result.Errors = append(result.Errors, fmt.Sprintf("list %s: %v", rule.RuleID, err))
+		return result
+	}
+	// Compare by canonical (CIDR) form so that a bare "1.2.3.4" and a
+	// "1.2.3.4/32" written by an admin — or by an older version of this
+	// plugin — are recognised as the same authorisation instead of being
+	// duplicated.
+	adminPresent := map[string]bool{} // canonical form of entries we do not own
+	managed := map[string]string{}    // canonical form -> the IP string as stored
+	ownedBy := map[string][]string{}  // fqdn -> canonical forms we hold for it
+	for _, e := range entries {
+		canonical := canonicalEntry(e.IP)
+		if !strings.HasPrefix(e.Comment, MarkerPrefix) {
+			adminPresent[canonical] = true
+			continue
+		}
+		managed[canonical] = e.IP
+		owner := strings.TrimPrefix(e.Comment, MarkerPrefix)
+		ownedBy[owner] = append(ownedBy[owner], canonical)
+	}
+
+	// 2. Build the desired set: ip -> owning fqdn (first provenance wins).
+	desired := map[string]string{}
+	for _, fqdn := range rule.FQDNs {
+		ips, err := r.Resolver.Resolve(fqdn)
+		if err == nil {
+			delete(r.failingSince, fqdn)
+			// Split the answer: an unroutable address is a statement that the
+			// device is down, not a location. It is dropped from the desired
+			// set, so whatever the device held before is revoked on this very
+			// cycle — no grace, because nothing failed.
+			routable := []string{}
+			for _, ip := range ips {
+				if r.Unroutable.Contains(ip) {
+					result.Offline[fqdn] = append(result.Offline[fqdn], ip)
+					continue
+				}
+				routable = append(routable, ip)
+			}
+			result.Resolved[fqdn] = routable
+			for _, ip := range routable {
+				entry := toCIDR(ip)
+				if _, exists := desired[entry]; !exists {
+					desired[entry] = fqdn
+				}
+			}
+			continue
+		}
+		if IsNameNotFound(err) {
+			// An authoritative "this name does not exist": the record really
+			// is gone, so fail closed at once regardless of the grace window.
+			delete(r.failingSince, fqdn)
+			result.Errors = append(result.Errors, fmt.Sprintf("resolve %s: %v", fqdn, err))
+			continue
+		}
+		// The window is tracked even when there is nothing to keep, so that a
+		// later cycle in which this FQDN does own entries still measures the
+		// outage from its first failure.
+		left, inGrace := r.graceLeft(fqdn)
+		// A last known IP that now falls in the blocklist must never be kept:
+		// grace protects against an unknown DNS failure, not against an
+		// address that must never be authorised regardless of why it is
+		// there (an operator adding a range to unroutable_cidrs while the
+		// FQDN is already failing, or a sentinel entry surviving an upgrade).
+		kept := ownedBy[fqdn]
+		if len(kept) > 0 {
+			filtered := make([]string, 0, len(kept))
+			for _, ip := range kept {
+				if ownedAddressIsUnroutable(r.Unroutable, ip) {
+					continue
+				}
+				filtered = append(filtered, ip)
+			}
+			kept = filtered
+		}
+		// ownedBy is keyed by the single owner named in an entry's comment, so
+		// an FQDN can legitimately hold no entries — including when another
+		// FQDN resolved to the same address first and was recorded as its
+		// owner, or when every entry it did hold was just filtered out above
+		// as blocklisted. With no last known IPs there is nothing to protect,
+		// and claiming otherwise would assert the opposite of what happened.
+		if inGrace && len(kept) > 0 {
+			for _, ip := range kept {
+				if _, exists := desired[ip]; !exists {
+					desired[ip] = fqdn
+				}
+			}
+			// Report the kept IPs and the remaining window as a state of their
+			// own, so the UI can distinguish "still authorised, protected" from
+			// "revoked" instead of rendering both as a bare failure.
+			result.Resolved[fqdn] = append([]string(nil), kept...)
+			result.Grace[fqdn] = left.Round(time.Minute).String()
+			result.Errors = append(result.Errors, fmt.Sprintf(
+				"resolve %s: %v (keeping last known IPs, %s of grace left)", fqdn, err, left.Round(time.Minute)))
+			continue
+		}
+		result.Errors = append(result.Errors, fmt.Sprintf("resolve %s: %v", fqdn, err))
+	}
+
+	// 3a. Add desired IPs not already authorised. An address already covered
+	// by an admin entry is left alone — admin entries must never be converted
+	// into plugin-owned ones by a collision.
+	for ip, fqdn := range desired {
+		if adminPresent[ip] || managed[ip] == ip {
+			continue
+		}
+		if err := r.Client.AddWhitelistIP(rule.RuleID, ip, MarkerPrefix+fqdn); err != nil {
+			result.Errors = append(result.Errors, fmt.Sprintf("add %s: %v", ip, err))
+			continue
+		}
+		result.Added = append(result.Added, ip)
+	}
+
+	// 3b. Remove owned entries no longer desired, plus those still stored in a
+	// legacy non-CIDR form — their replacement was added above, so dropping
+	// them never leaves the address unauthorised in between.
+	for canonical, stored := range managed {
+		_, want := desired[canonical]
+		if want && stored == canonical {
+			continue
+		}
+		if err := r.Client.RemoveWhitelistIP(rule.RuleID, stored); err != nil {
+			result.Errors = append(result.Errors, fmt.Sprintf("remove %s: %v", stored, err))
+			continue
+		}
+		result.Removed = append(result.Removed, stored)
+	}
+
+	sort.Strings(result.Added)
+	sort.Strings(result.Removed)
+	return result
+}
+
+// graceLeft reports how much of the grace window remains for a failing FQDN,
+// starting the window on the first failure of a run. ok is false when the
+// window is disabled or has expired, meaning the caller must fail closed.
+func (r *Reconciler) graceLeft(fqdn string) (time.Duration, bool) {
+	if r.Grace <= 0 {
+		return 0, false
+	}
+	since, seen := r.failingSince[fqdn]
+	if !seen {
+		since = r.now()
+		r.failingSince[fqdn] = since
+	}
+	left := r.Grace - r.now().Sub(since)
+	if left <= 0 {
+		return 0, false
+	}
+	return left, true
+}
+
+// All reconciles every rule in the config independently; an error on one rule
+// does not stop the others.
+func (r *Reconciler) All(cfg *Config) []ReconcileResult {
+	results := []ReconcileResult{}
+	configured := map[string]bool{}
+	for _, rule := range cfg.Rules {
+		results = append(results, r.Rule(rule))
+		for _, fqdn := range rule.FQDNs {
+			configured[fqdn] = true
+		}
+	}
+	// Forget the failure history of FQDNs that are no longer configured.
+	// Without this, an FQDN removed and later re-added would be judged against
+	// the timestamp of its old outage: the window would look long expired and
+	// the grace protection would be silently off for it.
+	for fqdn := range r.failingSince {
+		if !configured[fqdn] {
+			delete(r.failingSince, fqdn)
+		}
+	}
+	return results
+}
