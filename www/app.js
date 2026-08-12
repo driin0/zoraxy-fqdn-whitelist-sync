@@ -1,10 +1,23 @@
 // FQDN Whitelist Sync — GUI logic.
 // Native-Zoraxy look: rule selector dropdown + per-rule FQDN table.
 // GETs use plain $.getJSON; POSTs use $.cjax (CSRF token from the meta tag).
+// $.cjax fires the request but returns nothing, so success/error handlers go
+// inside the payload. Chaining .done()/.fail() onto it throws a TypeError
+// before either is registered: the write still reaches the server and the 5s
+// poll repaints the panel, so only the reporting is lost — silently, which is
+// worse. Guarded by TestPanelDoesNotChainOnCjax.
 
 let rulesCache = [];   // Zoraxy access rules: [{id,name,whitelist_enabled}]
 let stateCache = null; // {interval_seconds,last_run,rules,results}
 let currentRule = "default";
+// Two different failures, two flags. /api/state is served from the plugin's
+// own memory, so it failing means the plugin is gone; /api/rules proxies to
+// Zoraxy's access API and answers 502 when *that* is down (httpapi.go), with
+// the plugin perfectly healthy and every write still persisting. One flag for
+// both would put "changes will not be saved" on screen while they are being
+// saved, and the next /api/state tick would wipe it half a second later.
+let unreachable = null;      // /api/state did not answer: the plugin is gone
+let rulesUnavailable = null; // /api/rules did not answer: Zoraxy's rule API is
 
 function esc(s) {
     return String(s == null ? "" : s)
@@ -19,6 +32,51 @@ function notify(msg, ok) {
     if (window.parent && window.parent.msgbox) {
         window.parent.msgbox(msg, ok !== false);
     }
+}
+
+// --- talking to the plugin ----------------------------------------------
+// Everything goes through these two, so every response is read by apiError
+// (api.js) instead of by its HTTP status. Guarded by
+// TestPanelHasOneWayToCallTheAPI.
+
+// The 5s poll calls these on every tick; re-render only on a change.
+function setUnreachable(err) {
+    if (unreachable === err) return;
+    unreachable = err;
+    renderCurrent();
+}
+
+function setRulesUnavailable(err) {
+    if (rulesUnavailable === err) return;
+    rulesUnavailable = err;
+    renderCurrent();
+}
+
+// On failure the caller's handler is not run, so the panel keeps displaying
+// the last values it actually received rather than blanking itself from an
+// error body. onFail owns one flag, so each endpoint reports its own failure
+// and cannot clear the other's.
+function apiGet(url, onOk, onFail) {
+    return $.getJSON(url).done(function (resp) {
+        const err = apiError(resp);
+        if (err) { onFail(err); return; }
+        onFail(null);
+        onOk(resp);
+    }).fail(function (xhr, textStatus) {
+        onFail(apiErrorFromXHR(xhr, textStatus));
+    });
+}
+
+function apiPost(url, data, onOk, failMsg) {
+    $.cjax({
+        url: url, method: "POST", data: data,
+        success: function (resp) {
+            const err = apiError(resp);
+            if (err) { notify(err, false); return; }
+            onOk();
+        },
+        error: xhr => notify((xhr.responseJSON && xhr.responseJSON.error) || failMsg, false),
+    });
 }
 
 function ruleInfo(id) { return rulesCache.find(r => r.id === id); }
@@ -50,8 +108,27 @@ function populateRuleDropdown() {
 }
 
 function renderStatusMsg() {
-    const info = ruleInfo(currentRule);
     const $m = $("#syncStatusMsg");
+    // Takes priority: while the plugin is unreachable nothing else on the
+    // panel can be trusted, including the rule this message would describe.
+    if (unreachable) {
+        $m.attr("class", "ui negative message")
+            .html('<i class="exclamation triangle icon"></i> ' + (unreachable === SESSION_EXPIRED
+                ? 'Your Zoraxy session has expired — reload the page to sign in again. Nothing on this panel is being saved.'
+                : 'Cannot reach the plugin (' + esc(unreachable) +
+                  '). These are the last values received — changes will not be saved.')).show();
+        return;
+    }
+    // The plugin is fine here: it is Zoraxy's own access-rule API that did not
+    // answer. Syncing continues and writes persist, so this must not say the
+    // things the message above says.
+    if (rulesUnavailable) {
+        $m.attr("class", "ui warning message")
+            .html('<i class="exclamation triangle icon"></i> Zoraxy did not return its access rules (' +
+                esc(rulesUnavailable) + '). The rule list may be incomplete; syncing is unaffected.').show();
+        return;
+    }
+    const info = ruleInfo(currentRule);
     if (!info) {
         $m.attr("class", "ui warning message")
             .html('<i class="exclamation triangle icon"></i> This rule was not found in Zoraxy.').show();
@@ -76,7 +153,11 @@ function renderTable() {
     const fqdns = (cfg && cfg.fqdns) || [];
 
     if (fqdns.length === 0) {
-        $t.append('<tr><td colspan="4"><i class="green check circle icon"></i> No FQDNs synced for this rule yet. Add one above.</td></tr>');
+        // "Nothing configured" and "we cannot ask" look identical from here,
+        // and only one of them is a green tick.
+        $t.append(unreachable
+            ? '<tr><td colspan="4"><i class="exclamation triangle icon"></i> Cannot reach the plugin — this list is unknown, not empty.</td></tr>'
+            : '<tr><td colspan="4"><i class="green check circle icon"></i> No FQDNs synced for this rule yet. Add one above.</td></tr>');
         return;
     }
     fqdns.forEach(fqdn => {
@@ -123,17 +204,15 @@ function renderCurrent() {
 }
 
 function loadRules() {
-    return $.getJSON("./api/rules").done(function (rules) {
+    return apiGet("./api/rules", function (rules) {
         rulesCache = Array.isArray(rules) ? rules : [];
         populateRuleDropdown();
         renderCurrent();
-    }).fail(function () {
-        // dropdown stays as-is; the table still renders from config
-    });
+    }, setRulesUnavailable);
 }
 
 function loadState() {
-    return $.getJSON("./api/state").done(function (state) {
+    return apiGet("./api/state", function (state) {
         stateCache = state;
         if (!$("#intervalInput").is(":focus")) {
             $("#intervalInput").val(state.interval_seconds);
@@ -149,41 +228,36 @@ function loadState() {
         }
         $("#lastRun").text(state.last_run ? "Last sync: " + new Date(state.last_run).toLocaleString() : "No sync yet");
         renderTable();
-    });
+    }, setUnreachable);
 }
 
 $(function () {
     $("#addFqdnBtn").on("click", function () {
         const fqdn = $("#fqdnInput").val().trim();
         if (!currentRule || !fqdn) { notify("Enter a FQDN", false); return; }
-        $.cjax({ url: "./api/fqdn/add", method: "POST", data: { rule_id: currentRule, fqdn: fqdn } })
-            .done(() => { $("#fqdnInput").val(""); notify("FQDN added", true); loadState(); })
-            .fail(xhr => notify((xhr.responseJSON && xhr.responseJSON.error) || "Add failed", false));
+        apiPost("./api/fqdn/add", { rule_id: currentRule, fqdn: fqdn },
+            () => { $("#fqdnInput").val(""); notify("FQDN added", true); loadState(); }, "Add failed");
     });
 
     $("#fqdnTable").on("click", ".removeBtn", function () {
         const fqdn = $(this).attr("data-fqdn");
-        $.cjax({ url: "./api/fqdn/remove", method: "POST", data: { rule_id: currentRule, fqdn: fqdn } })
-            .done(() => { notify("FQDN removed", true); loadState(); })
-            .fail(xhr => notify((xhr.responseJSON && xhr.responseJSON.error) || "Remove failed", false));
+        apiPost("./api/fqdn/remove", { rule_id: currentRule, fqdn: fqdn },
+            () => { notify("FQDN removed", true); loadState(); }, "Remove failed");
     });
 
     $("#saveIntervalBtn").on("click", function () {
-        $.cjax({ url: "./api/interval", method: "POST", data: { seconds: $("#intervalInput").val() } })
-            .done(() => notify("Interval saved", true))
-            .fail(xhr => notify((xhr.responseJSON && xhr.responseJSON.error) || "Save failed", false));
+        apiPost("./api/interval", { seconds: $("#intervalInput").val() },
+            () => notify("Interval saved", true), "Save failed");
     });
 
     $("#saveDnsServersBtn").on("click", function () {
-        $.cjax({ url: "./api/dns-servers", method: "POST", data: { servers: $("#dnsServersInput").val() } })
-            .done(() => { notify("DNS servers saved", true); loadState(); })
-            .fail(xhr => notify((xhr.responseJSON && xhr.responseJSON.error) || "Save failed", false));
+        apiPost("./api/dns-servers", { servers: $("#dnsServersInput").val() },
+            () => { notify("DNS servers saved", true); loadState(); }, "Save failed");
     });
 
     $("#saveGraceBtn").on("click", function () {
-        $.cjax({ url: "./api/grace", method: "POST", data: { seconds: $("#graceInput").val() } })
-            .done(() => { notify("Grace window saved", true); loadState(); })
-            .fail(xhr => notify((xhr.responseJSON && xhr.responseJSON.error) || "Save failed", false));
+        apiPost("./api/grace", { seconds: $("#graceInput").val() },
+            () => { notify("Grace window saved", true); loadState(); }, "Save failed");
     });
 
     $("#saveUnroutableBtn").on("click", function () {
@@ -202,9 +276,8 @@ $(function () {
             !confirm("This clears the never-authorise list. Every resolved address, including sentinel addresses like 192.0.2.1, will be authorised. Continue?")) {
             return;
         }
-        $.cjax({ url: "./api/unroutable", method: "POST", data: { cidrs: cidrs } })
-            .done(() => { notify("Never-authorise list saved", true); loadState(); })
-            .fail(xhr => notify((xhr.responseJSON && xhr.responseJSON.error) || "Save failed", false));
+        apiPost("./api/unroutable", { cidrs: cidrs },
+            () => { notify("Never-authorise list saved", true); loadState(); }, "Save failed");
     });
 
     // Fill the field with the built-in list, keeping any custom range the
@@ -226,8 +299,11 @@ $(function () {
     });
 
     $("#refreshBtn").on("click", function () {
-        $.cjax({ url: "./api/refresh", method: "POST" })
-            .done(() => { notify("Refresh triggered", true); loadRules(); setTimeout(loadState, 600); });
+        // /api/refresh has no application error path of its own — it always
+        // answers 200. What it can still hit is an unreachable plugin or an
+        // expired session, and apiPost is what notices those.
+        apiPost("./api/refresh", {},
+            () => { notify("Refresh triggered", true); loadRules(); setTimeout(loadState, 600); }, "Refresh failed");
     });
 
     loadRules().always(loadState);
