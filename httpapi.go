@@ -57,10 +57,12 @@ func (a *APIServer) handleState(w http.ResponseWriter, r *http.Request) {
 		// back after the operator has cleared the configured one. Without it
 		// an empty list is a one-way door: the stored value is [] and the
 		// defaults would have to be retyped by hand.
-		"unroutable_defaults": append([]string(nil), DefaultUnroutableCIDRs...),
-		"last_run":            lr,
-		"rules":               cfg.Rules,
-		"results":             results,
+		"unroutable_defaults":       append([]string(nil), DefaultUnroutableCIDRs...),
+		"last_run":                  lr,
+		"rules":                     cfg.Rules,
+		"results":                   results,
+		"provider_interval_seconds": cfg.ProviderIntervalSeconds,
+		"available_providers":       availableProviders(),
 	})
 }
 
@@ -153,6 +155,49 @@ func (a *APIServer) handleRefresh(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
+func (a *APIServer) handleProviderAdd(w http.ResponseWriter, r *http.Request) {
+	if err := a.Store.AddProvider(r.FormValue("rule_id"), r.FormValue("provider")); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	a.trigger()
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (a *APIServer) handleProviderRemove(w http.ResponseWriter, r *http.Request) {
+	if err := a.Store.RemoveProvider(r.FormValue("rule_id"), r.FormValue("provider")); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	a.trigger()
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (a *APIServer) handleProviderInterval(w http.ResponseWriter, r *http.Request) {
+	seconds, err := strconv.Atoi(r.FormValue("seconds"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "seconds must be an integer")
+		return
+	}
+	if err := a.Store.SetProviderInterval(seconds); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	a.trigger()
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// availableProviders is the registry as the UI needs it. Serving it means the
+// panel knows no provider by name of its own, so adding one to KnownProviders
+// is the whole change.
+func availableProviders() []map[string]string {
+	out := make([]map[string]string, 0, len(KnownProviders))
+	for _, p := range KnownProviders {
+		out = append(out, map[string]string{"id": p.ID, "name": p.Name})
+	}
+	return out
+}
+
 // postOnly rejects any request whose method is not POST, preventing
 // state-changing handlers from being reachable via a lured GET navigation
 // (which bypasses gorilla/csrf and the SameSite=Lax admin cookie).
@@ -177,4 +222,7 @@ func (a *APIServer) Register(uiPath string) {
 	http.HandleFunc(uiPath+"/api/grace", postOnly(a.handleGrace))
 	http.HandleFunc(uiPath+"/api/unroutable", postOnly(a.handleUnroutable))
 	http.HandleFunc(uiPath+"/api/refresh", postOnly(a.handleRefresh))
+	http.HandleFunc(uiPath+"/api/provider/add", postOnly(a.handleProviderAdd))
+	http.HandleFunc(uiPath+"/api/provider/remove", postOnly(a.handleProviderRemove))
+	http.HandleFunc(uiPath+"/api/provider-interval", postOnly(a.handleProviderInterval))
 }

@@ -203,6 +203,33 @@ func TestPostOnlyRejectsGET(t *testing.T) {
 	if drained(api.Trigger) {
 		t.Error("GET must not trigger a reconcile")
 	}
+
+	// Verify handleProviderAdd rejects GET
+	h = postOnly(api.handleProviderAdd)
+	req = httptest.NewRequest(http.MethodGet, "/ui/api/provider/add?rule_id=default&provider=cloudflare", nil)
+	rec = httptest.NewRecorder()
+	h(rec, req)
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Errorf("handleProviderAdd: code = %d, want 405", rec.Code)
+	}
+
+	// Verify handleProviderRemove rejects GET
+	h = postOnly(api.handleProviderRemove)
+	req = httptest.NewRequest(http.MethodGet, "/ui/api/provider/remove?rule_id=default&provider=cloudflare", nil)
+	rec = httptest.NewRecorder()
+	h(rec, req)
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Errorf("handleProviderRemove: code = %d, want 405", rec.Code)
+	}
+
+	// Verify handleProviderInterval rejects GET
+	h = postOnly(api.handleProviderInterval)
+	req = httptest.NewRequest(http.MethodGet, "/ui/api/provider-interval?seconds=86400", nil)
+	rec = httptest.NewRecorder()
+	h(rec, req)
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Errorf("handleProviderInterval: code = %d, want 405", rec.Code)
+	}
 }
 
 func TestHandleStateIncludesDNSServersAndGrace(t *testing.T) {
@@ -370,5 +397,93 @@ func TestHandleGraceSetsAndRejectsNegative(t *testing.T) {
 	api.handleGrace(rec, req)
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("code = %d, want 400 for a negative window", rec.Code)
+	}
+}
+
+func TestHandleProviderAddPersistsAndTriggers(t *testing.T) {
+	api, store := newAPIServer(t, `{"rules":[]}`, &fakeLister{})
+	rec := postForm(api, api.handleProviderAdd, url.Values{"rule_id": {"default"}, "provider": {"cloudflare"}})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("code = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if got := store.Snapshot().Rules[0].Providers; len(got) != 1 || got[0] != "cloudflare" {
+		t.Errorf("providers = %v, want [cloudflare]", got)
+	}
+	if !drained(api.Trigger) {
+		t.Error("the write must trigger a reconcile")
+	}
+}
+
+func TestHandleProviderAddRejectsUnknown(t *testing.T) {
+	api, _ := newAPIServer(t, `{"rules":[]}`, &fakeLister{})
+	rec := postForm(api, api.handleProviderAdd, url.Values{"rule_id": {"default"}, "provider": {"nope"}})
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("code = %d, want 400 for an unknown provider", rec.Code)
+	}
+	if drained(api.Trigger) {
+		t.Error("a rejected write must not trigger a reconcile")
+	}
+}
+
+func TestHandleProviderRemove(t *testing.T) {
+	api, store := newAPIServer(t, `{"rules":[{"rule_id":"default","fqdns":[],"providers":["cloudflare"]}]}`, &fakeLister{})
+	rec := postForm(api, api.handleProviderRemove, url.Values{"rule_id": {"default"}, "provider": {"cloudflare"}})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("code = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if got := store.Snapshot().Rules[0].Providers; len(got) != 0 {
+		t.Errorf("providers = %v, want empty", got)
+	}
+}
+
+func TestHandleProviderRemoveNotFoundReturns400(t *testing.T) {
+	api, _ := newAPIServer(t, `{"rules":[{"rule_id":"default","fqdns":[]}]}`, &fakeLister{})
+	rec := postForm(api, api.handleProviderRemove, url.Values{"rule_id": {"default"}, "provider": {"cloudflare"}})
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("code = %d, want 400", rec.Code)
+	}
+}
+
+func TestHandleProviderIntervalFloor(t *testing.T) {
+	api, store := newAPIServer(t, `{"rules":[]}`, &fakeLister{})
+	if rec := postForm(api, api.handleProviderInterval, url.Values{"seconds": {"60"}}); rec.Code != http.StatusBadRequest {
+		t.Errorf("code = %d, want 400 below the floor", rec.Code)
+	}
+	if rec := postForm(api, api.handleProviderInterval, url.Values{"seconds": {"86400"}}); rec.Code != http.StatusOK {
+		t.Errorf("code = %d, want 200 above the floor", rec.Code)
+	}
+	if got := store.Snapshot().ProviderIntervalSeconds; got != 86400 {
+		t.Errorf("provider interval = %d, want 86400", got)
+	}
+}
+
+// The panel must not know any provider by name of its own: the registry is the
+// single source, so adding one never means editing JavaScript.
+func TestStateExposesTheProviderRegistry(t *testing.T) {
+	api, _ := newAPIServer(t, `{"rules":[]}`, &fakeLister{})
+
+	rec := httptest.NewRecorder()
+	api.handleState(rec, httptest.NewRequest(http.MethodGet, "/ui/api/state", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("code = %d", rec.Code)
+	}
+	var body struct {
+		ProviderIntervalSeconds int `json:"provider_interval_seconds"`
+		AvailableProviders      []struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+		} `json:"available_providers"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decoding the state: %v", err)
+	}
+	if body.ProviderIntervalSeconds != DefaultProviderIntervalSeconds {
+		t.Errorf("provider_interval_seconds = %d, want %d", body.ProviderIntervalSeconds, DefaultProviderIntervalSeconds)
+	}
+	if len(body.AvailableProviders) != len(KnownProviders) {
+		t.Fatalf("available_providers has %d entries, want %d", len(body.AvailableProviders), len(KnownProviders))
+	}
+	if body.AvailableProviders[0].ID == "" || body.AvailableProviders[0].Name == "" {
+		t.Errorf("a registry entry came through incomplete: %+v", body.AvailableProviders[0])
 	}
 }
