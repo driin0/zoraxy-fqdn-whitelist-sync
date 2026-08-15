@@ -164,6 +164,21 @@ function renderProviderRow($t, id, status) {
         // before anything has actually been fetched.
         statusCls = "status-pending";
         statusTxt = "pending";
+    } else if (status.blocked) {
+        // The reconciler refused these ranges because they overlap the
+        // never-authorise list, and revoked the ones already whitelisted. The
+        // stale branch below would be false three times over here — the list
+        // is fresh, nothing failed to refresh, and a range was revoked rather
+        // than kept — and false at the exact moment the operator is looking to
+        // see whether their edit took effect.
+        statusCls = "status-blocked";
+        statusTxt = '<i class="ban icon"></i> blocked';
+        note = '<div class="graceNote">Ranges overlapping your never-authorise list were revoked (' +
+               esc(status.error) + ') — ' +
+               (prefixes.length
+                   ? "the ranges listed stay authorised."
+                   : "nothing is authorised for this provider.") +
+               "</div>";
     } else if (!status.error) {
         statusCls = "status-ok";
         statusTxt = '<i class="check circle icon"></i> ok';

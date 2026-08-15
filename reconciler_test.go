@@ -1316,3 +1316,35 @@ func TestAFetchedEntryThatIsNotACIDRIsTreatedAsAFailedFetch(t *testing.T) {
 		t.Errorf("status = %+v, want the fetch reported as failed", res.Providers)
 	}
 }
+
+// Fix round 3, B1: the panel's fetch-failure branch was the only one that
+// could hold prefixes and an error at once, so the revocation introduced by
+// the per-cycle re-test landed there and told the operator the list could not
+// be refreshed and the ranges were kept — when the list is fresh and a range
+// was just revoked. The two states have to be distinguishable at the seam, not
+// guessed at from the wording of an error string.
+func TestARevokedCacheIsReportedAsBlockedAndAFailedFetchIsNot(t *testing.T) {
+	client := newFakeClient()
+	fetcher := &fakeFetcher{prefixes: []string{"104.16.0.0/13", "2400:cb00::/32"}}
+	r := newProviderReconciler(client, fetcher)
+	rule := RuleConfig{RuleID: "default", Providers: []string{"cloudflare"}}
+
+	if res := r.Rule(rule); res.Providers[0].Blocked {
+		t.Errorf("status = %+v, want blocked false on a healthy fetch", res.Providers[0])
+	}
+
+	r.Unroutable, _ = NewUnroutableSet(append(append([]string{}, DefaultUnroutableCIDRs...), "104.20.0.0/16"))
+	res := r.Rule(rule)
+	if !res.Providers[0].Blocked {
+		t.Errorf("status = %+v, want blocked true once a range was revoked for overlapping the list", res.Providers[0])
+	}
+
+	// A plain fetch failure keeps the same cache and must not claim a
+	// revocation: same error field, opposite meaning.
+	r.Unroutable, _ = NewUnroutableSet(DefaultUnroutableCIDRs)
+	fetcher.err = fmt.Errorf("connection refused")
+	r.now = func() time.Time { return time.Now().Add(24 * time.Hour) }
+	if res := r.Rule(rule); res.Providers[0].Blocked {
+		t.Errorf("status = %+v, want blocked false when the fetch merely failed", res.Providers[0])
+	}
+}

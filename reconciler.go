@@ -46,6 +46,14 @@ type ProviderStatus struct {
 	// StaleFor is a human-readable age, set only while Error is set.
 	StaleFor string `json:"stale_for"`
 	Error    string `json:"error"`
+	// Blocked says the ranges were refused this cycle for overlapping the
+	// never-authorise list, rather than a fetch having failed. The two look
+	// identical through Error alone, and the panel's fetch-failure copy is
+	// false three times over here — the list is fresh, nothing failed to
+	// refresh, and a range was revoked instead of kept — at the exact moment
+	// the operator is checking whether their edit took effect. A bool, so the
+	// publish-by-reference contract on ReconcileResult is unaffected.
+	Blocked bool `json:"blocked"`
 }
 
 // toCIDR turns a single address into its single-host CIDR form (/32 for IPv4,
@@ -370,9 +378,11 @@ func (r *Reconciler) Rule(rule RuleConfig) ReconcileResult {
 		// error is also outstanding this message replaces it, because it is the
 		// one that explains what is authorised right now.
 		reported := st.lastErr
+		blocked := false
 		authorised := st.prefixes
 		if err := validateAgainstUnroutable(authorised, r.Unroutable); err != nil {
 			reported = err.Error()
+			blocked = true
 			authorised = nil
 		}
 		if len(authorised) == 0 {
@@ -389,6 +399,7 @@ func (r *Reconciler) Rule(rule RuleConfig) ReconcileResult {
 			Name:     provider.Name,
 			Prefixes: append([]string(nil), authorised...),
 			Error:    reported,
+			Blocked:  blocked,
 		}
 		if status.Name == "" {
 			status.Name = id

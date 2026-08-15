@@ -36,6 +36,10 @@
            read as green. Red past a week: an authorisation whose appearance
            never worsens is one nobody goes and checks. */
         td.status-stale { color: #f2711c; font-weight: bold; }
+        /* Orange like stale: attention, not alarm. The revocation was asked for
+           by the operator's own never-authorise list, so it is a degraded state
+           rather than a failure — the label and the note say which. */
+        td.status-blocked { color: #f2711c; font-weight: bold; }
         td.status-stale-long { color: #db2828; font-weight: bold; }
         #fqdnTable td .graceNote { color: var(--text_color_secondary, #888); font-size: 0.9em; }
         .muted { color: var(--text_color_secondary, #888); }

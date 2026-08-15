@@ -264,3 +264,56 @@ func TestStatusStoreRoundTrip(t *testing.T) {
 		t.Errorf("results = %+v, unexpected", results)
 	}
 }
+
+// The revocation state added with the per-cycle unroutable re-test renders in
+// renderProviderRow, where the fetch-failure branch was until then the only one
+// that could hold prefixes and an error at once. Borrowing that copy tells the
+// operator the list could not be refreshed and the ranges were kept, while the
+// list is fresh and a range has just been revoked — the panel contradicting
+// what the plugin did, at the exact moment the operator is checking whether
+// their blocklist edit took effect.
+func TestPanelDescribesARevocationAsARevocationNotAFailedRefresh(t *testing.T) {
+	b, err := content.ReadFile("www/app.js")
+	if err != nil {
+		t.Fatalf("reading embedded app.js: %v", err)
+	}
+	src := string(b)
+
+	start := strings.Index(src, "status.blocked")
+	if start < 0 {
+		t.Fatal("app.js no longer branches on status.blocked — a revoked range renders as a failed refresh again")
+	}
+	// The branch that keeps prefixes and an error together. Reaching it after
+	// that test is reaching it never, for the case that has ranges left.
+	stale := strings.Index(src, "} else if (prefixes.length > 0)")
+	if stale < 0 {
+		t.Fatal("the fetch-failure branch was renamed; this guard no longer guards anything")
+	}
+	if start > stale {
+		t.Error("the status.blocked branch comes after the prefixes-held branch, so a revocation with ranges left still renders as a failed refresh")
+	}
+
+	end := strings.Index(src[start:], "} else")
+	if end < 0 {
+		t.Fatal("could not find the end of the status.blocked branch")
+	}
+	// Only the copy the operator reads: the comments in this branch discuss the
+	// state they must not describe, and matching on those would fail the guard
+	// for explaining itself.
+	kept := []string{}
+	for _, line := range strings.Split(src[start:start+end], "\n") {
+		if !strings.HasPrefix(strings.TrimSpace(line), "//") {
+			kept = append(kept, line)
+		}
+	}
+	branch := strings.Join(kept, "\n")
+
+	if !strings.Contains(branch, "revoked") {
+		t.Errorf("the status.blocked branch never says anything was revoked:\n%s", branch)
+	}
+	for _, borrowed := range []string{"Cannot refresh", "stale"} {
+		if strings.Contains(branch, borrowed) {
+			t.Errorf("the status.blocked branch uses the fetch-failure word %q, which is false on this path:\n%s", borrowed, branch)
+		}
+	}
+}
