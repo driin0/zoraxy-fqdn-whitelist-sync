@@ -1,8 +1,9 @@
 # FQDN Whitelist Sync — a Zoraxy plugin
 
 Keeps a Zoraxy access-control whitelist in sync with the IPs a set of FQDNs
-resolves to. Point it at a dynamic-DNS name and the whitelist follows that
-host as its address changes, without anyone editing rules by hand.
+resolves to, and with the published ranges of known CDN providers. Point it
+at a dynamic-DNS name and the whitelist follows that host as its address
+changes, without anyone editing rules by hand.
 
 Built for the case where the people who must reach a service sit behind
 dynamic residential addresses — a DDNS name per site, and the whitelist keeps
@@ -20,8 +21,9 @@ up on its own.
   default — so a flaky resolver does not lock people out. An authoritative
   NXDOMAIN is not ambiguous and revokes immediately.
 - **It only touches its own entries.** Every address it adds is tagged with a
-  `fqdn-sync:<fqdn>` comment. Entries added by an administrator are never
-  modified or removed.
+  `fqdn-sync:<owner>` comment, where the owner is the FQDN or provider id
+  that authorised it. Entries added by an administrator are never modified
+  or removed.
 - **It never authorises an unroutable address.** DDNS providers publish
   sentinels such as `192.0.2.1` for an offline device, and a host that failed
   DHCP self-assigns a link-local address. Whitelisting those would authorise
@@ -75,7 +77,8 @@ will collide.
 ## Configure
 
 Enable the plugin in Zoraxy, then open its UI to add rules. Each rule pairs a
-Zoraxy access-rule ID with the FQDNs whose addresses should be synced into it.
+Zoraxy access-rule ID with the FQDNs and provider ranges that should be
+synced into it.
 
 **Also enable Whitelist mode on the target access rule.** Without it, the
 whitelist is maintained but does not restrict anything — the plugin's UI warns
