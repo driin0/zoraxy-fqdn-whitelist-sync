@@ -1348,3 +1348,27 @@ func TestARevokedCacheIsReportedAsBlockedAndAFailedFetchIsNot(t *testing.T) {
 		t.Errorf("status = %+v, want blocked false when the fetch merely failed", res.Providers[0])
 	}
 }
+
+// Fix round 3, B2: HTTPProviderFetcher refuses an empty answer of its own
+// accord, but that is the asymmetry F2 was about — any other implementation
+// returning nothing would have had lastSuccess stamped and the error cleared,
+// which is a green row over a provider authorising nothing.
+func TestAFetcherReturningNothingIsTreatedAsAFailedFetchNotAnEmptySuccess(t *testing.T) {
+	client := newFakeClient()
+	client.entries["default"] = []WhitelistEntry{
+		{EntryType: 1, IP: "104.16.0.0/13", Comment: MarkerPrefix + "cloudflare"},
+	}
+	r := newProviderReconciler(client, &fakeFetcher{prefixes: []string{}})
+
+	res := r.Rule(RuleConfig{RuleID: "default", Providers: []string{"cloudflare"}})
+
+	if len(res.Providers) != 1 || res.Providers[0].Error == "" {
+		t.Fatalf("status = %+v, want an empty answer reported as a failed fetch", res.Providers)
+	}
+	if res.Providers[0].LastSuccess != "" {
+		t.Errorf("last success = %q, want no success stamped for an empty answer", res.Providers[0].LastSuccess)
+	}
+	if len(res.Removed) != 0 {
+		t.Errorf("removed %v — a failed fetch must never revoke", res.Removed)
+	}
+}

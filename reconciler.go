@@ -330,6 +330,16 @@ func (r *Reconciler) Rule(rule RuleConfig) ReconcileResult {
 			// rules belong to the caller. Order matters — an entry that is not
 			// a CIDR would slip past validateAgainstUnroutable, which answers
 			// "no overlap" for anything it cannot parse.
+			if err == nil && len(prefixes) == 0 {
+				// An empty answer is a failure, never an instruction to
+				// authorise nothing. HTTPProviderFetcher refuses one of its own
+				// accord, but that is again a guarantee living in a single
+				// implementation: without this, any other fetcher returning
+				// nothing would have lastSuccess stamped and lastErr cleared,
+				// and the row would go green over a provider that authorises
+				// nothing at all.
+				err = fmt.Errorf("the fetch returned no prefixes")
+			}
 			if err == nil {
 				err = checkPrefixList(prefixes)
 			}
