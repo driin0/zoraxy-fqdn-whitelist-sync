@@ -537,7 +537,7 @@ func TestAddProviderPersistsAndRejectsUnknown(t *testing.T) {
 	}
 }
 
-func TestRemoveProvider(t *testing.T) {
+func TestRemovingAProviderClearsItAndRemovingItAgainIsAnError(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "config.json")
 	cfg, err := LoadConfig(p)
 	if err != nil {
@@ -558,7 +558,7 @@ func TestRemoveProvider(t *testing.T) {
 	}
 }
 
-func TestSetProviderIntervalFloor(t *testing.T) {
+func TestSetProviderIntervalRejectsBelowTheFloorAndPersistsAValidValue(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "config.json")
 	cfg, err := LoadConfig(p)
 	if err != nil {

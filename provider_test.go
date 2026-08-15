@@ -26,7 +26,7 @@ func TestProviderIDsAreNotValidFQDNs(t *testing.T) {
 	}
 }
 
-func TestLookupProvider(t *testing.T) {
+func TestLookupProviderResolvesAKnownIDAndRefusesAnUnknownOne(t *testing.T) {
 	if _, ok := LookupProvider("cloudflare"); !ok {
 		t.Error("cloudflare must be in the registry")
 	}
@@ -95,7 +95,7 @@ func TestParsePrefixListAcceptsTheRealCloudflareBreadth(t *testing.T) {
 	}
 }
 
-func TestCheckPrefixCountCeiling(t *testing.T) {
+func TestThePrefixCountCeilingAcceptsItsExactValueAndRefusesOneMore(t *testing.T) {
 	ok := make([]string, providerMaxPrefixes)
 	for i := range ok {
 		ok[i] = "104.16.0.0/13"
@@ -108,7 +108,7 @@ func TestCheckPrefixCountCeiling(t *testing.T) {
 	}
 }
 
-func TestValidateAgainstUnroutable(t *testing.T) {
+func TestOneUnroutableOverlapRejectsTheWholeList(t *testing.T) {
 	set, err := NewUnroutableSet([]string{"192.0.2.0/24"})
 	if err != nil {
 		t.Fatalf("NewUnroutableSet: %v", err)

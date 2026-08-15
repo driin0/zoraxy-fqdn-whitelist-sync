@@ -204,7 +204,10 @@ func TestPostOnlyRejectsGET(t *testing.T) {
 		t.Error("GET must not trigger a reconcile")
 	}
 
-	// Verify handleProviderAdd rejects GET
+	// Every other mutating handler, checked the same way. postOnly is applied
+	// per handler at registration, so one of them being wrapped says nothing
+	// about the rest: the way this guard gets lost is a new handler registered
+	// bare, which only a per-handler assertion catches.
 	h = postOnly(api.handleProviderAdd)
 	req = httptest.NewRequest(http.MethodGet, "/ui/api/provider/add?rule_id=default&provider=cloudflare", nil)
 	rec = httptest.NewRecorder()
@@ -213,7 +216,6 @@ func TestPostOnlyRejectsGET(t *testing.T) {
 		t.Errorf("handleProviderAdd: code = %d, want 405", rec.Code)
 	}
 
-	// Verify handleProviderRemove rejects GET
 	h = postOnly(api.handleProviderRemove)
 	req = httptest.NewRequest(http.MethodGet, "/ui/api/provider/remove?rule_id=default&provider=cloudflare", nil)
 	rec = httptest.NewRecorder()
@@ -222,7 +224,6 @@ func TestPostOnlyRejectsGET(t *testing.T) {
 		t.Errorf("handleProviderRemove: code = %d, want 405", rec.Code)
 	}
 
-	// Verify handleProviderInterval rejects GET
 	h = postOnly(api.handleProviderInterval)
 	req = httptest.NewRequest(http.MethodGet, "/ui/api/provider-interval?seconds=86400", nil)
 	rec = httptest.NewRecorder()

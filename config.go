@@ -214,6 +214,11 @@ func cloneConfig(c *Config) *Config {
 // entries already in the whitelist are never removed, because removal only
 // happens inside the rule that owns them. Losing the config leaves orphaned
 // authorisations that nothing will clean up.
+//
+// The cleanup os.Remove calls discard their own errors deliberately: the write
+// has already failed, and that failure is the one worth returning. Nothing
+// accumulates if a remove does fail, because tmp is a fixed name opened
+// O_TRUNC, so the next save overwrites whatever a failed one left behind.
 func saveConfig(c *Config, path string) error {
 	data, err := json.MarshalIndent(c, "", "  ")
 	if err != nil {
