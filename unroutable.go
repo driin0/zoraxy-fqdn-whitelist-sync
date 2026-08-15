@@ -79,3 +79,36 @@ func (u *UnroutableSet) Contains(ip string) bool {
 	}
 	return false
 }
+
+// Overlaps reports whether a CIDR intersects any configured range, to any
+// degree: contained in one, containing one, or identical. A whitelist source
+// that publishes prefixes must be tested this way — Contains takes a single
+// address and answers false for a CIDR string, so using it here would let a
+// prefix past the filter in silence.
+//
+// Input that is not a CIDR does not overlap. It is not a prefix at all, and
+// the caller rejects it before this is reached (checkPrefix in provider.go).
+func (u *UnroutableSet) Overlaps(prefix string) bool {
+	if u == nil {
+		return false
+	}
+	_, network, err := net.ParseCIDR(prefix)
+	if err != nil {
+		return false
+	}
+	for _, n := range u.nets {
+		if networksOverlap(n, network) {
+			return true
+		}
+	}
+	return false
+}
+
+// networksOverlap reports whether two CIDRs intersect. Two prefixes intersect
+// exactly when one contains the other's network address, so testing both
+// directions is the whole test. It is also what keeps the families apart:
+// IPNet.Contains normalises the address through To4() and compares lengths,
+// so a genuine IPv6 prefix is never inside an IPv4 range.
+func networksOverlap(a, b *net.IPNet) bool {
+	return a.Contains(b.IP) || b.Contains(a.IP)
+}

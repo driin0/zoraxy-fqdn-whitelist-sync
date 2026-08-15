@@ -91,3 +91,51 @@ func TestUnroutableSetIgnoresUnparseableInput(t *testing.T) {
 		t.Error("a non-address must not be reported as unroutable")
 	}
 }
+
+// Overlaps is the prefix-shaped counterpart of Contains, and it is a safety
+// control: a prefix that intersects a never-authorise range must be refused
+// however it intersects — contained in one, containing one, or identical.
+//
+// The cross-family rows pin behaviour verified against Go's net package on
+// 2026-08-15 rather than assumed. A genuine IPv6 prefix does not overlap an
+// IPv4 range. The IPv4-mapped form does, because IPNet.Contains normalises
+// through To4() — and that is the direction we want, since the result is a
+// rejection.
+func TestUnroutableSetOverlapsPrefixes(t *testing.T) {
+	set, err := NewUnroutableSet([]string{"192.0.2.0/24", "2001:db8::/32", "127.0.0.0/8"})
+	if err != nil {
+		t.Fatalf("NewUnroutableSet: %v", err)
+	}
+	cases := []struct {
+		name   string
+		prefix string
+		want   bool
+	}{
+		{"identical to a blocked range", "192.0.2.0/24", true},
+		{"contained in a blocked range", "192.0.2.128/25", true},
+		{"containing a blocked range", "192.0.0.0/16", true},
+		{"the default route swallows everything", "0.0.0.0/0", true},
+		{"a real CDN prefix is untouched", "104.16.0.0/13", false},
+		{"a disjoint v4 prefix", "198.51.100.0/24", false},
+		{"an IPv6 prefix inside a blocked v6 range", "2001:db8:1::/48", true},
+		{"a real CDN v6 prefix is untouched", "2a06:98c0::/29", false},
+		{"the v6 default route", "::/0", true},
+		{"an IPv4-mapped prefix over a blocked v4 range", "::ffff:127.0.0.1/120", true},
+		{"not a CIDR at all", "192.0.2.1", false},
+		{"nonsense", "hello", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := set.Overlaps(c.prefix); got != c.want {
+				t.Errorf("Overlaps(%q) = %v, want %v", c.prefix, got, c.want)
+			}
+		})
+	}
+}
+
+func TestNilUnroutableSetOverlapsNothing(t *testing.T) {
+	var set *UnroutableSet
+	if set.Overlaps("0.0.0.0/0") {
+		t.Error("a nil set must block nothing, not everything")
+	}
+}
