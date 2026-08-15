@@ -178,7 +178,10 @@
                         <p class="muted" style="margin-top:0.4em;">
                             How often published CDN ranges are refetched. They change
                             about twice a year, so the minimum is one hour. "Refresh now"
-                            refetches immediately.
+                            refetches immediately. A saved value takes effect from the
+                            next fetch, so lowering it while a fetch is recent still
+                            waits out the interval in force; "Refresh now" applies it
+                            at once.
                         </p>
                     </div>
                 </div>
