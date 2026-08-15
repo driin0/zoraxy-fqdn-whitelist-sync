@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -33,7 +34,7 @@ func TestReconcileLoopRebuildsResolverOnDNSServerChange(t *testing.T) {
 	}
 
 	trigger := make(chan struct{}, 1)
-	go runReconcileLoop(newFakeClient(), newResolver, store, &StatusStore{}, trigger)
+	go runReconcileLoop(newFakeClient(), newResolver, nil, store, &StatusStore{}, trigger, &atomic.Bool{})
 
 	if got := recvWithin(t, built); got != "1.1.1.1" {
 		t.Errorf("first cycle used %q, want 1.1.1.1", got)
@@ -87,7 +88,7 @@ func TestReconcileLoopPreservesGraceStateAcrossCycles(t *testing.T) {
 	}
 	trigger := make(chan struct{}, 1)
 	status := &StatusStore{}
-	go runReconcileLoop(client, func([]string) Resolver { return &failingResolver{err: networkErr()} }, store, status, trigger)
+	go runReconcileLoop(client, func([]string) Resolver { return &failingResolver{err: networkErr()} }, nil, store, status, trigger, &atomic.Bool{})
 
 	// Cycle 1 is the loop's synchronous first run: it starts the 1s grace
 	// window and must remove nothing yet.
@@ -148,7 +149,7 @@ func TestReconcileLoopAppliesTheConfiguredUnroutableCIDRs(t *testing.T) {
 		}}
 	}
 
-	go runReconcileLoop(client, newResolver, store, &StatusStore{}, make(chan struct{}, 1))
+	go runReconcileLoop(client, newResolver, nil, store, &StatusStore{}, make(chan struct{}, 1), &atomic.Bool{})
 
 	// Wait for the routable address to land. Without this the assertion below
 	// would also hold if the loop never ran at all, and the test would pass
@@ -183,7 +184,7 @@ func TestReconcileLoopWaitsForTheZoraxyAPIBeforeTheFirstCycle(t *testing.T) {
 		return &fakeResolver{m: map[string][]string{"a.example.com": {"1.2.3.4"}}}
 	}
 
-	go runReconcileLoop(client, newResolver, store, status, make(chan struct{}, 1))
+	go runReconcileLoop(client, newResolver, nil, store, status, make(chan struct{}, 1), &atomic.Bool{})
 
 	// Zoraxy finishes starting up shortly after the plugin does.
 	time.Sleep(300 * time.Millisecond)
@@ -238,4 +239,66 @@ func recvWithin(t *testing.T, ch <-chan string) string {
 		t.Fatal("timed out waiting for a reconcile cycle to build a resolver")
 		return ""
 	}
+}
+
+// The loop must wire the fetcher and the provider period into the Reconciler
+// and publish the result, or a configured provider would sit silently unused.
+func TestReconcileLoopPublishesProviderStatus(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(p, []byte(`{"provider_interval_seconds":3600,"rules":[{"rule_id":"default","providers":["cloudflare"]}]}`), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cfg, err := LoadConfig(p)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	store := NewConfigStore(cfg, p)
+	status := &StatusStore{}
+	fetcher := &fakeFetcher{prefixes: []string{"104.16.0.0/13"}}
+	trigger := make(chan struct{}, 1)
+	var force atomic.Bool
+
+	go runReconcileLoop(newFakeClient(), NewResolver, fetcher, store, status, trigger, &force)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, results := status.Snapshot(); len(results) == 1 && len(results[0].Providers) == 1 {
+			if results[0].Providers[0].Error != "" {
+				t.Fatalf("provider reported an error: %s", results[0].Providers[0].Error)
+			}
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("the loop never published a provider status")
+}
+
+// Pressing Refresh sets the flag; the loop must consume it, hand it to All,
+// and clear it, so one press forces exactly one cycle.
+func TestReconcileLoopConsumesTheForceFlag(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(p, []byte(`{"rules":[]}`), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cfg, err := LoadConfig(p)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	store := NewConfigStore(cfg, p)
+	trigger := make(chan struct{}, 1)
+	var force atomic.Bool
+	force.Store(true)
+
+	go runReconcileLoop(newFakeClient(), NewResolver, &fakeFetcher{}, store, &StatusStore{}, trigger, &force)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if !force.Load() {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("the loop never cleared the force flag")
 }

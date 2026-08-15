@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"sync/atomic"
 	"time"
 )
 
@@ -17,6 +18,9 @@ type APIServer struct {
 	Status  *StatusStore
 	Rules   RuleLister
 	Trigger chan struct{}
+	// ForceProviders is raised by the Refresh button and lowered by the
+	// reconcile loop, which is the only reader.
+	ForceProviders *atomic.Bool
 }
 
 func (a *APIServer) trigger() {
@@ -142,6 +146,9 @@ func (a *APIServer) handleUnroutable(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *APIServer) handleRefresh(w http.ResponseWriter, r *http.Request) {
+	if a.ForceProviders != nil {
+		a.ForceProviders.Store(true)
+	}
 	a.trigger()
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }

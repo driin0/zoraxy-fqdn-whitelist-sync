@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -57,8 +58,9 @@ func main() {
 	client := NewHTTPZoraxyClient(runtimeCfg.ZoraxyPort, runtimeCfg.APIKey)
 	status := &StatusStore{}
 	trigger := make(chan struct{}, 1)
+	force := &atomic.Bool{}
 
-	api := &APIServer{Store: store, Status: status, Rules: client, Trigger: trigger}
+	api := &APIServer{Store: store, Status: status, Rules: client, Trigger: trigger, ForceProviders: force}
 	api.Register(UI_PATH)
 
 	uiRouter := plugin.NewPluginEmbedUIRouter(PLUGIN_ID, &content, WEB_ROOT, UI_PATH)
@@ -91,7 +93,7 @@ func main() {
 		os.Exit(0)
 	}()
 
-	go runReconcileLoop(client, NewResolver, store, status, trigger)
+	go runReconcileLoop(client, NewResolver, NewHTTPProviderFetcher(), store, status, trigger, force)
 
 	addr := fmt.Sprintf("127.0.0.1:%d", runtimeCfg.Port)
 	fmt.Printf("FQDN Whitelist Sync running on %s\n", addr)
@@ -129,7 +131,7 @@ func waitForZoraxyAPI(client ZoraxyClient, timeout time.Duration) {
 // One Reconciler is kept for the whole run and updated in place: rebuilding it
 // each cycle would reset the per-FQDN failure clocks and the grace window
 // would never expire.
-func runReconcileLoop(client ZoraxyClient, newResolver func(servers []string) Resolver, store *ConfigStore, status *StatusStore, trigger <-chan struct{}) {
+func runReconcileLoop(client ZoraxyClient, newResolver func(servers []string) Resolver, fetcher ProviderFetcher, store *ConfigStore, status *StatusStore, trigger <-chan struct{}, force *atomic.Bool) {
 	// Zoraxy launches its plugins while it is still starting up, before its own
 	// API port is listening, so reconciling immediately fails with "connection
 	// refused" — and that error then sits in the UI until the next tick, which
@@ -139,10 +141,12 @@ func runReconcileLoop(client ZoraxyClient, newResolver func(servers []string) Re
 	waitForZoraxyAPI(client, 30*time.Second)
 
 	reconciler := NewReconciler(client, nil, 0)
+	reconciler.Fetcher = fetcher
 	runOnce := func() {
 		cfg := store.Snapshot()
 		reconciler.Resolver = newResolver(cfg.DNSServers)
 		reconciler.Grace = time.Duration(cfg.GraceSeconds) * time.Second
+		reconciler.ProviderPeriod = time.Duration(cfg.ProviderIntervalSeconds) * time.Second
 		// cfg.UnroutableCIDRs should always be valid by the time it gets here:
 		// LoadConfig validates it and is fatal at startup if it is not, the UI
 		// path (SetUnroutableCIDRs) validates before persisting, and
@@ -157,7 +161,9 @@ func runReconcileLoop(client ZoraxyClient, newResolver func(servers []string) Re
 		} else {
 			fmt.Printf("invalid unroutable_cidrs, keeping the previous list: %v\n", err)
 		}
-		status.Set(reconciler.All(cfg, false), time.Now())
+		// Read and clear in one operation: a press arriving while a cycle is
+		// already running is honoured by the next one rather than lost.
+		status.Set(reconciler.All(cfg, force.Swap(false)), time.Now())
 	}
 	runOnce() // immediate first run
 	ticker := time.NewTicker(time.Duration(store.Snapshot().IntervalSeconds) * time.Second)
