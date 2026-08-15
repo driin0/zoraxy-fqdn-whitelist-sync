@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"testing"
 )
 
@@ -405,5 +406,71 @@ func TestLoadConfigStillRejectsAMalformedFile(t *testing.T) {
 	}
 	if _, err := LoadConfig(path); err == nil {
 		t.Fatal("want an error for malformed JSON, got nil — a corrupt config must never be silently replaced")
+	}
+}
+
+// The config is not a secret, but world-readable it is the access policy in
+// the clear: which DDNS names are authorised, which internal resolvers are
+// used. 0600 costs nothing and applies to files created before this change
+// too, because the temp file carries its own mode through the rename.
+func TestSaveConfigWritesOwnerOnlyPermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX permission bits are not meaningful on Windows")
+	}
+	dir := t.TempDir()
+	p := filepath.Join(dir, "config.json")
+	// Start from a world-readable file, as an install predating this change would.
+	if err := os.WriteFile(p, []byte(`{"rules":[]}`), 0o644); err != nil {
+		t.Fatalf("seeding the config: %v", err)
+	}
+	cfg, err := LoadConfig(p)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if err := saveConfig(cfg, p); err != nil {
+		t.Fatalf("saveConfig: %v", err)
+	}
+	info, err := os.Stat(p)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Errorf("config mode is %v, want 0600", got)
+	}
+}
+
+// createDefaultConfig must go through the same hardened path, or a fresh
+// install is world-readable until its first edit.
+func TestCreatedDefaultConfigIsOwnerOnly(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX permission bits are not meaningful on Windows")
+	}
+	p := filepath.Join(t.TempDir(), "config.json")
+	if _, err := LoadConfig(p); err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	info, err := os.Stat(p)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Errorf("created config mode is %v, want 0600", got)
+	}
+}
+
+// The temp file must not survive a successful save: a leftover .tmp is a
+// second copy of the same policy sitting next to the hardened one.
+func TestSaveConfigLeavesNoTempFile(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "config.json")
+	cfg, err := LoadConfig(p)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if err := saveConfig(cfg, p); err != nil {
+		t.Fatalf("saveConfig: %v", err)
+	}
+	if _, err := os.Stat(p + ".tmp"); !os.IsNotExist(err) {
+		t.Errorf("the temp file survived the save (stat err = %v)", err)
 	}
 }

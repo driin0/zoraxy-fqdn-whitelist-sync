@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -101,11 +102,7 @@ func createDefaultConfig(path string) (*Config, error) {
 		UnroutableCIDRs: append([]string(nil), DefaultUnroutableCIDRs...),
 		Rules:           []RuleConfig{},
 	}
-	data, err := json.MarshalIndent(cfg, "", "  ")
-	if err != nil {
-		return nil, err
-	}
-	if err := os.WriteFile(path, append(data, '\n'), 0o644); err != nil {
+	if err := saveConfig(cfg, path); err != nil {
 		return nil, fmt.Errorf("creating default config %q: %w", path, err)
 	}
 	return cfg, nil
@@ -183,17 +180,59 @@ func cloneConfig(c *Config) *Config {
 	return out
 }
 
-// saveConfig writes the config atomically (temp file + rename).
+// saveConfig writes the config atomically (temp file + rename) and durably
+// (fsync before the rename). Mode 0600: the file is not a secret — the Zoraxy
+// API key arrives at runtime and is never written — but it is the access
+// policy in the clear.
+//
+// Durability is not fussiness here. If this file is lost, LoadConfig creates a
+// fresh one with no rules, Reconciler.All then iterates over nothing, and the
+// entries already in the whitelist are never removed, because removal only
+// happens inside the rule that owns them. Losing the config leaves orphaned
+// authorisations that nothing will clean up.
 func saveConfig(c *Config, path string) error {
 	data, err := json.MarshalIndent(c, "", "  ")
 	if err != nil {
 		return err
 	}
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0644); err != nil {
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		os.Remove(tmp)
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		os.Remove(tmp)
+		return err
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	syncDir(filepath.Dir(path))
+	return nil
+}
+
+// syncDir flushes the directory entry so the rename itself survives a crash.
+// Its error is deliberately ignored: on Windows a directory cannot be opened
+// for sync at all, and there the rename's own semantics are what we get.
+// Failing the save over it would turn a durability nicety into an outage.
+func syncDir(dir string) {
+	d, err := os.Open(dir)
+	if err != nil {
+		return
+	}
+	d.Sync()
+	d.Close()
 }
 
 // ConfigStore is the thread-safe, persisted source of truth for the config.
