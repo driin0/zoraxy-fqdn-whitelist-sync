@@ -1255,3 +1255,64 @@ func TestARejectedCacheAuthorisesAgainOnceTheBlockedRangeIsRemoved(t *testing.T)
 		t.Errorf("status = %+v, want the provider reported healthy again", res.Providers)
 	}
 }
+
+// Fix round 2, F2: the reconciler applied only the unroutable filter to what
+// the seam returned, so the breadth floor and the ceiling were guarantees of
+// one implementation rather than of the plugin. With the blocklist empty,
+// 0.0.0.0/0 passed every check the reconciler made and authorised the whole
+// Internet with the panel green.
+func TestAFetchedPrefixBroaderThanTheFloorIsTreatedAsAFailedFetch(t *testing.T) {
+	client := newFakeClient()
+	fetcher := &fakeFetcher{prefixes: []string{"0.0.0.0/0", "::/0"}}
+	r := newProviderReconciler(client, fetcher)
+	r.Unroutable, _ = NewUnroutableSet(nil) // the filter that would otherwise mask it
+
+	res := r.Rule(RuleConfig{RuleID: "default", Providers: []string{"cloudflare"}})
+
+	if len(res.Added) != 0 {
+		t.Errorf("added %v, want the whole answer refused", res.Added)
+	}
+	if len(res.Providers) != 1 || res.Providers[0].Error == "" || len(res.Providers[0].Prefixes) != 0 {
+		t.Errorf("status = %+v, want the fetch reported as failed with nothing held", res.Providers)
+	}
+}
+
+// The ceiling is a bound on a cost Zoraxy pays on every proxied request, so it
+// belongs to the reconciler that writes the entries, not only to the fetcher
+// that happened to read them.
+func TestMoreFetchedPrefixesThanTheCeilingIsTreatedAsAFailedFetch(t *testing.T) {
+	client := newFakeClient()
+	prefixes := make([]string, 0, providerMaxPrefixes+1)
+	for i := 0; i <= providerMaxPrefixes; i++ {
+		prefixes = append(prefixes, fmt.Sprintf("198.18.%d.%d/32", i/256, i%256))
+	}
+	r := newProviderReconciler(client, &fakeFetcher{prefixes: prefixes})
+
+	res := r.Rule(RuleConfig{RuleID: "default", Providers: []string{"cloudflare"}})
+
+	if len(res.Added) != 0 {
+		t.Errorf("added %d entries, want the whole answer refused", len(res.Added))
+	}
+	if len(res.Providers) != 1 || res.Providers[0].Error == "" {
+		t.Errorf("status = %+v, want the fetch reported as failed", res.Providers)
+	}
+}
+
+// Anything that is not a CIDR has to be refused here rather than downstream:
+// UnroutableSet.Overlaps answers false for input it cannot parse, so a
+// non-CIDR would cross the never-authorise filter untested and be written to
+// the whitelist verbatim.
+func TestAFetchedEntryThatIsNotACIDRIsTreatedAsAFailedFetch(t *testing.T) {
+	client := newFakeClient()
+	fetcher := &fakeFetcher{prefixes: []string{"104.16.0.0/13", "totally-not-a-cidr"}}
+	r := newProviderReconciler(client, fetcher)
+
+	res := r.Rule(RuleConfig{RuleID: "default", Providers: []string{"cloudflare"}})
+
+	if len(res.Added) != 0 {
+		t.Errorf("added %v, want the whole answer refused", res.Added)
+	}
+	if len(res.Providers) != 1 || res.Providers[0].Error == "" {
+		t.Errorf("status = %+v, want the fetch reported as failed", res.Providers)
+	}
+}

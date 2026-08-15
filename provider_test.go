@@ -221,6 +221,20 @@ func TestFetchAppliesTheCountCeiling(t *testing.T) {
 	}
 }
 
+// Fix round 2, F2: a provider row with no endpoints made the loop body never
+// run, and an empty union then travelled back as a success. The caller would
+// stamp lastSuccess, clear the error and paint the row green while the provider
+// authorised nothing and no request had been made at all. Unreachable from the
+// registry as it stands, which is precisely the problem: the invariant was held
+// by a data row rather than by code.
+func TestFetchingAProviderWithNoEndpointsFailsInsteadOfSucceedingEmpty(t *testing.T) {
+	f := newTestFetcher(nil)
+	prefixes, err := f.Fetch(Provider{ID: "t"})
+	if err == nil {
+		t.Fatalf("prefixes = %v, err = nil; want a provider with no endpoints to fail", prefixes)
+	}
+}
+
 func newTestFetcher(override map[string]string) *HTTPProviderFetcher {
 	f := NewHTTPProviderFetcher()
 	f.BaseOverride = override

@@ -131,6 +131,18 @@ func checkPrefix(prefix string) error {
 	return nil
 }
 
+// checkPrefixList applies both rules to a whole list at once, so the caller of
+// a ProviderFetcher can enforce the contract in one call regardless of which
+// implementation answered.
+func checkPrefixList(prefixes []string) error {
+	for _, prefix := range prefixes {
+		if err := checkPrefix(prefix); err != nil {
+			return err
+		}
+	}
+	return checkPrefixCount(prefixes)
+}
+
 func checkPrefixCount(prefixes []string) error {
 	if len(prefixes) > providerMaxPrefixes {
 		return fmt.Errorf("%d prefixes exceeds the ceiling of %d", len(prefixes), providerMaxPrefixes)
@@ -153,6 +165,13 @@ func validateAgainstUnroutable(prefixes []string, u *UnroutableSet) error {
 
 // ProviderFetcher is the seam the reconciler is built against, so no test ever
 // makes a network request.
+//
+// Contract: every returned element must be a CIDR that passes checkPrefix, and
+// there must be no more than providerMaxPrefixes of them. The reconciler
+// applies checkPrefixList to whatever comes back rather than trusting the
+// implementation to have done it — what crosses this seam becomes network
+// authorisation, and a rule enforced only inside one implementation stops
+// being a rule the moment a second one exists.
 type ProviderFetcher interface {
 	Fetch(p Provider) ([]string, error)
 }
@@ -200,6 +219,15 @@ func (f *HTTPProviderFetcher) Fetch(p Provider) ([]string, error) {
 			return nil, fmt.Errorf("%s: %w", endpoint, err)
 		}
 		all = append(all, prefixes...)
+	}
+	// A provider with no endpoints at all would otherwise be an empty success
+	// with no network involved: the caller would stamp lastSuccess, clear the
+	// error and paint the row green while the provider authorises nothing.
+	// parsePrefixList already refuses an empty body, so an empty union can only
+	// mean the registry row is wrong — which is a failure to report, never an
+	// instruction to authorise nothing.
+	if len(all) == 0 {
+		return nil, fmt.Errorf("provider %q has no endpoints", p.ID)
 	}
 	if err := checkPrefixCount(all); err != nil {
 		return nil, err

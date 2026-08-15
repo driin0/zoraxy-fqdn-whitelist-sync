@@ -314,6 +314,17 @@ func (r *Reconciler) Rule(rule RuleConfig) ReconcileResult {
 				st.lastForcedSeen = r.now()
 			}
 			prefixes, err := r.Fetcher.Fetch(provider)
+			// Shape and volume are checked here, on what the seam returned,
+			// rather than left to the implementation behind it. parsePrefixList
+			// does check every line it reads, but a guarantee that lives inside
+			// one implementation is not a guarantee of the plugin: this
+			// interface decides who may reach the proxied services, so its
+			// rules belong to the caller. Order matters — an entry that is not
+			// a CIDR would slip past validateAgainstUnroutable, which answers
+			// "no overlap" for anything it cannot parse.
+			if err == nil {
+				err = checkPrefixList(prefixes)
+			}
 			if err == nil {
 				err = validateAgainstUnroutable(prefixes, r.Unroutable)
 			}
