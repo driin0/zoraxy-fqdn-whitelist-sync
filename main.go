@@ -71,6 +71,27 @@ func main() {
 	// Zoraxy stops a plugin by GETting <UIPath>/term, and without a handler
 	// there it logs "does not support termination request". The SDK's handler
 	// answers 200 and then exits 100ms later, once the response is on the wire.
+	//
+	// This one only prints, and that is the design rather than an omission:
+	// there is nothing to flush. config.json is written atomically on every
+	// change (saveConfig: temp file, fsync, rename) and never held in memory
+	// pending a save; there is no database, no open connection, and no cache
+	// that survives the process. "No new persistent state" is an acceptance
+	// criterion of this plugin, not an accident of it.
+	//
+	// If that ever stops being true, the cleanup belongs *here* and not in the
+	// signal handler below. termFunc runs synchronously, before the 200 goes on
+	// the wire and therefore before Zoraxy sends SIGTERM, so this is the only
+	// window in which slow work is safe — about three seconds of it, after which
+	// Zoraxy's client times out and it force-shuts-down anyway. Make it callable
+	// from both paths (a sync.Once), because a SIGTERM can also arrive without
+	// this handler running at all: at machine shutdown, or if the GET times out.
+	//
+	// What it must not do is call os.Exit itself, despite the review on PR #17
+	// asking for exactly that. Exiting here happens before the response is
+	// written, so Zoraxy's GET fails and it logs "termination request failed.
+	// Force shutting down" — a worse outcome than today, and one the SDK already
+	// avoids by owning the exit after the response.
 	uiRouter.RegisterTerminateHandler(func() {
 		fmt.Println("FQDN Whitelist Sync terminating")
 	}, nil)
