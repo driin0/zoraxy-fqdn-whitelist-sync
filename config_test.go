@@ -474,3 +474,115 @@ func TestSaveConfigLeavesNoTempFile(t *testing.T) {
 		t.Errorf("the temp file survived the save (stat err = %v)", err)
 	}
 }
+
+// A config written before providers existed must load byte-for-byte the same
+// and simply gain the defaults. There is no migration here and there must
+// never need to be one.
+func TestLoadConfigDefaultsProviderInterval(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(p, []byte(`{"interval_seconds":30,"rules":[{"rule_id":"default","fqdns":["a.example.net"]}]}`), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	cfg, err := LoadConfig(p)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.ProviderIntervalSeconds != DefaultProviderIntervalSeconds {
+		t.Errorf("provider interval = %d, want %d", cfg.ProviderIntervalSeconds, DefaultProviderIntervalSeconds)
+	}
+	if len(cfg.Rules) != 1 || len(cfg.Rules[0].Providers) != 0 {
+		t.Errorf("an old rule must load with no providers, got %+v", cfg.Rules)
+	}
+}
+
+func TestLoadConfigClampsProviderIntervalToTheFloor(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(p, []byte(`{"provider_interval_seconds":5,"rules":[]}`), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	cfg, err := LoadConfig(p)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.ProviderIntervalSeconds != MinProviderIntervalSeconds {
+		t.Errorf("provider interval = %d, want the floor %d", cfg.ProviderIntervalSeconds, MinProviderIntervalSeconds)
+	}
+}
+
+func TestAddProviderPersistsAndRejectsUnknown(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config.json")
+	cfg, err := LoadConfig(p)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	store := NewConfigStore(cfg, p)
+
+	if err := store.AddProvider("default", "cloudflare"); err != nil {
+		t.Fatalf("AddProvider: %v", err)
+	}
+	if err := store.AddProvider("default", "cloudflare"); err == nil {
+		t.Error("adding the same provider twice must be rejected")
+	}
+	if err := store.AddProvider("default", "not-a-provider"); err == nil {
+		t.Error("an unknown provider id must be rejected on the way in")
+	}
+
+	reloaded, err := LoadConfig(p)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if len(reloaded.Rules) != 1 || len(reloaded.Rules[0].Providers) != 1 ||
+		reloaded.Rules[0].Providers[0] != "cloudflare" {
+		t.Errorf("the provider did not survive the round trip: %+v", reloaded.Rules)
+	}
+}
+
+func TestRemoveProvider(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config.json")
+	cfg, err := LoadConfig(p)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	store := NewConfigStore(cfg, p)
+	if err := store.AddProvider("default", "cloudflare"); err != nil {
+		t.Fatalf("AddProvider: %v", err)
+	}
+	if err := store.RemoveProvider("default", "cloudflare"); err != nil {
+		t.Fatalf("RemoveProvider: %v", err)
+	}
+	if got := store.Snapshot().Rules[0].Providers; len(got) != 0 {
+		t.Errorf("providers = %v, want empty", got)
+	}
+	if err := store.RemoveProvider("default", "cloudflare"); err == nil {
+		t.Error("removing what is not there must be an error")
+	}
+}
+
+func TestSetProviderIntervalFloor(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config.json")
+	cfg, err := LoadConfig(p)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	store := NewConfigStore(cfg, p)
+	if err := store.SetProviderInterval(MinProviderIntervalSeconds - 1); err == nil {
+		t.Error("below the floor must be rejected")
+	}
+	if err := store.SetProviderInterval(86400); err != nil {
+		t.Fatalf("SetProviderInterval: %v", err)
+	}
+	if got := store.Snapshot().ProviderIntervalSeconds; got != 86400 {
+		t.Errorf("provider interval = %d, want 86400", got)
+	}
+}
+
+// cloneConfig backs Snapshot, which the reconcile loop reads every cycle. A
+// shallow copy of Providers would let the loop mutate the stored config.
+func TestCloneConfigCopiesProvidersIndependently(t *testing.T) {
+	c := &Config{Rules: []RuleConfig{{RuleID: "default", Providers: []string{"cloudflare"}}}}
+	clone := cloneConfig(c)
+	clone.Rules[0].Providers[0] = "tampered"
+	if c.Rules[0].Providers[0] != "cloudflare" {
+		t.Error("cloneConfig shares the Providers slice with the original")
+	}
+}

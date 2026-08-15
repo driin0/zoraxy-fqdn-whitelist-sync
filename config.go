@@ -24,9 +24,23 @@ const DefaultIntervalSeconds = 30
 // prolonged outage without leaving an address authorised for a whole day.
 const DefaultGraceSeconds = 3600
 
+// DefaultProviderIntervalSeconds is how often published provider ranges are
+// refetched. They change roughly twice a year, so 12 hours is already
+// generous; Cloudflare's own cache-control on those endpoints is 24 hours.
+const DefaultProviderIntervalSeconds = 43200
+
+// MinProviderIntervalSeconds is a politeness floor towards the endpoint. The
+// escape hatch for someone configuring or debugging is the Refresh button,
+// which forces a refetch regardless of the schedule.
+const MinProviderIntervalSeconds = 3600
+
 type RuleConfig struct {
 	RuleID string   `json:"rule_id"`
 	FQDNs  []string `json:"fqdns"`
+	// Providers are ids from KnownProviders. Unlike UnroutableCIDRs this does
+	// carry omitempty: an absent list and an empty one both mean "none", so
+	// nothing is lost by leaving the key out of a rule that has no providers.
+	Providers []string `json:"providers,omitempty"`
 }
 
 type Config struct {
@@ -39,6 +53,8 @@ type Config struct {
 	DNSServer string `json:"dns_server,omitempty"`
 	// GraceSeconds is the failure grace window. 0 means fail closed at once.
 	GraceSeconds int `json:"dns_failure_grace_seconds"`
+	// ProviderIntervalSeconds is how often provider range lists are refetched.
+	ProviderIntervalSeconds int `json:"provider_interval_seconds"`
 	// UnroutableCIDRs are ranges that must never be authorised. An FQDN that
 	// resolves only into these is reported as offline. Note the absence of
 	// omitempty: an explicitly empty list means "block nothing" and has to
@@ -63,6 +79,11 @@ func LoadConfig(path string) (*Config, error) {
 		cfg.IntervalSeconds = DefaultIntervalSeconds
 	} else if cfg.IntervalSeconds < MinIntervalSeconds {
 		cfg.IntervalSeconds = MinIntervalSeconds
+	}
+	if cfg.ProviderIntervalSeconds <= 0 {
+		cfg.ProviderIntervalSeconds = DefaultProviderIntervalSeconds
+	} else if cfg.ProviderIntervalSeconds < MinProviderIntervalSeconds {
+		cfg.ProviderIntervalSeconds = MinProviderIntervalSeconds
 	}
 	// Migrate the superseded single-valued field, unless a list is present.
 	if len(cfg.DNSServers) == 0 && cfg.DNSServer != "" {
@@ -97,10 +118,11 @@ func LoadConfig(path string) (*Config, error) {
 // than guessing at rules on someone's proxy.
 func createDefaultConfig(path string) (*Config, error) {
 	cfg := &Config{
-		IntervalSeconds: DefaultIntervalSeconds,
-		GraceSeconds:    DefaultGraceSeconds,
-		UnroutableCIDRs: append([]string(nil), DefaultUnroutableCIDRs...),
-		Rules:           []RuleConfig{},
+		IntervalSeconds:         DefaultIntervalSeconds,
+		GraceSeconds:            DefaultGraceSeconds,
+		ProviderIntervalSeconds: DefaultProviderIntervalSeconds,
+		UnroutableCIDRs:         append([]string(nil), DefaultUnroutableCIDRs...),
+		Rules:                   []RuleConfig{},
 	}
 	if err := saveConfig(cfg, path); err != nil {
 		return nil, fmt.Errorf("creating default config %q: %w", path, err)
@@ -169,13 +191,15 @@ func ParseDNSServers(raw string) []string {
 }
 
 func cloneConfig(c *Config) *Config {
-	out := &Config{IntervalSeconds: c.IntervalSeconds, GraceSeconds: c.GraceSeconds}
+	out := &Config{IntervalSeconds: c.IntervalSeconds, GraceSeconds: c.GraceSeconds, ProviderIntervalSeconds: c.ProviderIntervalSeconds}
 	out.DNSServers = append([]string(nil), c.DNSServers...)
 	out.UnroutableCIDRs = append([]string(nil), c.UnroutableCIDRs...)
 	for _, r := range c.Rules {
 		fq := make([]string, len(r.FQDNs))
 		copy(fq, r.FQDNs)
-		out.Rules = append(out.Rules, RuleConfig{RuleID: r.RuleID, FQDNs: fq})
+		pv := make([]string, len(r.Providers))
+		copy(pv, r.Providers)
+		out.Rules = append(out.Rules, RuleConfig{RuleID: r.RuleID, FQDNs: fq, Providers: pv})
 	}
 	return out
 }
@@ -408,4 +432,87 @@ func (s *ConfigStore) SetUnroutableCIDRs(cidrs []string) error {
 	}
 	s.cfg = next
 	return nil
+}
+
+func (s *ConfigStore) SetProviderInterval(seconds int) error {
+	if seconds < MinProviderIntervalSeconds {
+		return fmt.Errorf("provider interval must be >= %d seconds", MinProviderIntervalSeconds)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	next := cloneConfig(s.cfg)
+	next.ProviderIntervalSeconds = seconds
+	if err := saveConfig(next, s.path); err != nil {
+		return err
+	}
+	s.cfg = next
+	return nil
+}
+
+// AddProvider validates against the registry rather than accepting free text.
+// An unknown id would be harmless at runtime — it is reported like a failed
+// fetch — but refusing it here means the operator learns immediately.
+func (s *ConfigStore) AddProvider(ruleID, provider string) error {
+	provider = strings.TrimSpace(provider)
+	if _, known := LookupProvider(provider); !known {
+		return fmt.Errorf("unknown provider %q", provider)
+	}
+	if strings.TrimSpace(ruleID) == "" {
+		return fmt.Errorf("rule_id is empty")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	next := cloneConfig(s.cfg)
+	idx := -1
+	for i := range next.Rules {
+		if next.Rules[i].RuleID == ruleID {
+			idx = i
+			break
+		}
+	}
+	if idx == -1 {
+		next.Rules = append(next.Rules, RuleConfig{RuleID: ruleID, FQDNs: []string{}})
+		idx = len(next.Rules) - 1
+	}
+	for _, existing := range next.Rules[idx].Providers {
+		if existing == provider {
+			return fmt.Errorf("provider %q already present in rule %q", provider, ruleID)
+		}
+	}
+	next.Rules[idx].Providers = append(next.Rules[idx].Providers, provider)
+	if err := saveConfig(next, s.path); err != nil {
+		return err
+	}
+	s.cfg = next
+	return nil
+}
+
+func (s *ConfigStore) RemoveProvider(ruleID, provider string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	next := cloneConfig(s.cfg)
+	for i := range next.Rules {
+		if next.Rules[i].RuleID != ruleID {
+			continue
+		}
+		kept := []string{}
+		found := false
+		for _, p := range next.Rules[i].Providers {
+			if p == provider {
+				found = true
+				continue
+			}
+			kept = append(kept, p)
+		}
+		if !found {
+			return fmt.Errorf("provider %q not found in rule %q", provider, ruleID)
+		}
+		next.Rules[i].Providers = kept
+		if err := saveConfig(next, s.path); err != nil {
+			return err
+		}
+		s.cfg = next
+		return nil
+	}
+	return fmt.Errorf("rule %q not found", ruleID)
 }
