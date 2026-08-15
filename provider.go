@@ -216,7 +216,11 @@ func (f *HTTPProviderFetcher) Fetch(p Provider) ([]string, error) {
 		}
 		prefixes, err := f.fetchOne(url)
 		if err != nil {
-			return nil, fmt.Errorf("%s: %w", endpoint, err)
+			// Not wrapped with the endpoint here: fetchOne already names it
+			// wherever the underlying error does not. Doing it in both places
+			// is what put the same URL in a status line twice, at the width of
+			// a panel column.
+			return nil, err
 		}
 		all = append(all, prefixes...)
 	}
@@ -235,23 +239,43 @@ func (f *HTTPProviderFetcher) Fetch(p Provider) ([]string, error) {
 	return all, nil
 }
 
+// fetchOne carries the endpoint in its errors, but only where the underlying
+// error does not already name it. An http.Client failure reads
+// `Get "https://…": …` and repeating the address in front of that is how a
+// stale row's note ended up twice as long as it needed to be, in a panel column
+// narrow enough to feel it. Everything below that point loses the URL unless we
+// put it back: a status code, a size, and `line 3: not a CIDR` say nothing about
+// which of a provider's two endpoints they came from.
 func (f *HTTPProviderFetcher) fetchOne(url string) ([]string, error) {
 	resp, err := f.HTTP.Get(url)
 	if err != nil {
+		// Usually the client's own error already reads `Get "<url>": …` and
+		// prefixing it would say the address twice. Not always: when
+		// CheckRedirect refuses a redirect, Go replaces the *url.Error's URL
+		// with the raw Location header, so a relative one leaves an error
+		// naming neither the endpoint nor a host — on the very failure this
+		// fetcher goes out of its way to produce. Add it only when missing.
+		if !strings.Contains(err.Error(), url) {
+			return nil, fmt.Errorf("%s: %w", url, err)
+		}
 		return nil, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("http %d", resp.StatusCode)
+		return nil, fmt.Errorf("%s: http %d", url, resp.StatusCode)
 	}
 	// One byte past the ceiling, so a body that reaches the limit is detected
 	// as oversized instead of being silently truncated into a valid answer.
 	body, err := io.ReadAll(io.LimitReader(resp.Body, providerBodyLimit+1))
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%s: %w", url, err)
 	}
 	if len(body) > providerBodyLimit {
-		return nil, fmt.Errorf("response exceeds %d bytes", providerBodyLimit)
+		return nil, fmt.Errorf("%s: response exceeds %d bytes", url, providerBodyLimit)
 	}
-	return parsePrefixList(body)
+	prefixes, err := parsePrefixList(body)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", url, err)
+	}
+	return prefixes, nil
 }

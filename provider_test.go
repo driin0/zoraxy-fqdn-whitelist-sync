@@ -274,3 +274,61 @@ func TestProviderSourceDoesNotReferenceTheConfiguredResolvers(t *testing.T) {
 		}
 	}
 }
+
+// The endpoint appears once in a fetch error, not twice.
+//
+// http.Client failures already read `Get "https://…": …`, so prefixing them
+// with the endpoint again produced a note carrying the same URL twice — in a
+// panel column narrow enough that it cost two extra wrapped lines on the one
+// row an operator reads when something is wrong.
+//
+// Deliberately no BaseOverride here. With one, the registry endpoint ("a") and
+// the URL actually fetched are different strings, the duplication cannot occur,
+// and this test passes against the very defect it exists to catch — verified by
+// reintroducing it. Production has no override, so endpoint and URL are the
+// same string and that is the shape worth testing.
+func TestAFetchErrorNamesItsEndpointExactlyOnce(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	url := srv.URL
+	srv.Close() // nothing is listening now: the transport fails and names the URL itself
+
+	f := NewHTTPProviderFetcher()
+	_, err := f.Fetch(Provider{ID: "t", Name: "T", Endpoints: []string{url}})
+	if err == nil {
+		t.Fatal("a fetch against a closed listener must fail")
+	}
+	if n := strings.Count(err.Error(), url); n != 1 {
+		t.Errorf("the endpoint appears %d times in %q, want exactly 1", n, err.Error())
+	}
+
+	// Below the transport the URL is ours to add, and must still be there: a
+	// parse failure says nothing about which of a provider's endpoints it came
+	// from unless we say so.
+	bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "not-a-cidr\n")
+	}))
+	defer bad.Close()
+	_, err = NewHTTPProviderFetcher().Fetch(Provider{ID: "t", Name: "T", Endpoints: []string{bad.URL}})
+	if err == nil {
+		t.Fatal("an unparseable body must fail")
+	}
+	if n := strings.Count(err.Error(), bad.URL); n != 1 {
+		t.Errorf("a parse error names its endpoint %d times in %q, want exactly 1", n, err.Error())
+	}
+
+	// A refused redirect is the case where the client's error does NOT carry the
+	// endpoint: Go overwrites the *url.Error's URL with the raw Location header,
+	// so a relative one leaves nothing to act on. This is the failure this
+	// fetcher deliberately creates, so it is the one that must name its source.
+	moved := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/moved", http.StatusFound)
+	}))
+	defer moved.Close()
+	_, err = NewHTTPProviderFetcher().Fetch(Provider{ID: "t", Name: "T", Endpoints: []string{moved.URL}})
+	if err == nil {
+		t.Fatal("a redirect must not be followed")
+	}
+	if n := strings.Count(err.Error(), moved.URL); n != 1 {
+		t.Errorf("a refused redirect names its endpoint %d times in %q, want exactly 1", n, err.Error())
+	}
+}
