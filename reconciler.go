@@ -339,7 +339,31 @@ func (r *Reconciler) Rule(rule RuleConfig) ReconcileResult {
 		// What is actually authorised: the cache when there is one, otherwise
 		// the entries this provider already owns in the whitelist. That
 		// fallback is why no cache has to survive a restart.
+		//
+		// The cache is re-tested against the never-authorise list on every
+		// cycle, not only on the cycle that fetched it. unroutable_cidrs is an
+		// operator control that can change at any moment, while a fetch happens
+		// twice a day: with the test only at fetch time, a range added from the
+		// panel would stay authorised for the rest of the interval, and the one
+		// control whose entire purpose is "never authorise this" would do
+		// nothing. The FQDN pass re-checks its resolved addresses on every
+		// cycle for the same reason. A cache that no longer passes counts as no
+		// cache, so the owned entries below are filtered per prefix instead:
+		// the blocked one is revoked, the provider's others survive.
+		//
+		// The rejection is reported for this cycle only and st.prefixes is left
+		// alone. The cache is upstream data, not an authorisation, and it is
+		// tested again before every use; keeping it is what lets the prefixes
+		// come back within one tick if the operator takes the range out of the
+		// list again, instead of at the next scheduled fetch. When a fetch
+		// error is also outstanding this message replaces it, because it is the
+		// one that explains what is authorised right now.
+		reported := st.lastErr
 		authorised := st.prefixes
+		if err := validateAgainstUnroutable(authorised, r.Unroutable); err != nil {
+			reported = err.Error()
+			authorised = nil
+		}
 		if len(authorised) == 0 {
 			authorised = keepableOwned(r.Unroutable, ownedBy[id])
 		}
@@ -353,7 +377,7 @@ func (r *Reconciler) Rule(rule RuleConfig) ReconcileResult {
 			ID:       id,
 			Name:     provider.Name,
 			Prefixes: append([]string(nil), authorised...),
-			Error:    st.lastErr,
+			Error:    reported,
 		}
 		if status.Name == "" {
 			status.Name = id
@@ -361,11 +385,11 @@ func (r *Reconciler) Rule(rule RuleConfig) ReconcileResult {
 		if !st.lastSuccess.IsZero() {
 			status.LastSuccess = st.lastSuccess.Format(time.RFC3339)
 		}
-		if st.lastErr != "" && !st.lastSuccess.IsZero() {
+		if reported != "" && !st.lastSuccess.IsZero() {
 			status.StaleFor = r.now().Sub(st.lastSuccess).Round(time.Minute).String()
 		}
-		if st.lastErr != "" {
-			result.Errors = append(result.Errors, fmt.Sprintf("provider %s: %s", id, st.lastErr))
+		if reported != "" {
+			result.Errors = append(result.Errors, fmt.Sprintf("provider %s: %s", id, reported))
 		}
 		result.Providers = append(result.Providers, status)
 	}

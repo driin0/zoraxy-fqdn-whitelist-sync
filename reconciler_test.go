@@ -1148,7 +1148,12 @@ func TestZeroProviderPeriodDoesNotForceARefetchEveryCycle(t *testing.T) {
 // even though the /13's own network address sits outside the /16 — the exact
 // case Contains missed and the README's "never authorises an unroutable
 // address" promise depends on.
-func TestOwnedProviderPrefixOverlappingANewlyBlockedRangeIsRevoked(t *testing.T) {
+//
+// This covers the empty-cache branch only: the fetcher errors, so nothing is
+// cached and the fallback to the owned entries is what runs. The warm-cache
+// branch — the one taken on 1,439 of the day's 1,440 ticks — is covered by
+// TestACachedProviderPrefixOverlappingANewlyBlockedRangeIsRevokedWithoutARefetch.
+func TestOwnedProviderPrefixOverlappingANewlyBlockedRangeIsRevokedWithAnEmptyCache(t *testing.T) {
 	client := newFakeClient()
 	client.entries["default"] = []WhitelistEntry{
 		{EntryType: 1, IP: "104.16.0.0/13", Comment: MarkerPrefix + "cloudflare"},
@@ -1165,5 +1170,88 @@ func TestOwnedProviderPrefixOverlappingANewlyBlockedRangeIsRevoked(t *testing.T)
 	}
 	if len(res.Providers) != 1 || len(res.Providers[0].Prefixes) != 0 {
 		t.Errorf("status = %+v, want nothing reported as held", res.Providers)
+	}
+}
+
+// Fix round 2, F1: the warm cache reached `desired` without ever being tested
+// against unroutable_cidrs again, and the cache is what answers on 1,439 of the
+// day's 1,440 ticks. Adding a range from the panel therefore changed nothing
+// for up to twelve hours, and the refetch that eventually rejected the list
+// left the cache in place, so the prefix stayed authorised indefinitely.
+func TestACachedProviderPrefixOverlappingANewlyBlockedRangeIsRevokedWithoutARefetch(t *testing.T) {
+	client := newFakeClient()
+	fetcher := &fakeFetcher{prefixes: []string{"104.16.0.0/13"}}
+	r := newProviderReconciler(client, fetcher)
+	rule := RuleConfig{RuleID: "default", Providers: []string{"cloudflare"}}
+
+	r.Rule(rule) // fetch succeeds: cache warm, next attempt twelve hours away
+	// What the operator does from the panel, mid-interval.
+	r.Unroutable, _ = NewUnroutableSet(append(append([]string{}, DefaultUnroutableCIDRs...), "104.20.0.0/16"))
+
+	res := r.Rule(rule)
+
+	if fetcher.calls != 1 {
+		t.Fatalf("calls = %d, want 1 — this cycle must not be due for a refetch", fetcher.calls)
+	}
+	if len(res.Removed) != 1 || res.Removed[0] != "104.16.0.0/13" {
+		t.Errorf("removed %v, want the cached /13 revoked: it overlaps the newly blocked /16", res.Removed)
+	}
+	if entries, _ := client.ListWhitelistIP("default"); len(entries) != 0 {
+		t.Errorf("whitelist holds %v, want the blocked prefix gone", entries)
+	}
+	if len(res.Providers) != 1 || len(res.Providers[0].Prefixes) != 0 || res.Providers[0].Error == "" {
+		t.Errorf("status = %+v, want nothing held and the reason reported", res.Providers)
+	}
+}
+
+// The rejected cache is refused whole, but the fallback that follows filters
+// the owned entries one at a time, so blocking one range does not revoke the
+// ranges the operator never objected to.
+func TestBlockingOneProviderPrefixLeavesTheProvidersOtherPrefixesAuthorised(t *testing.T) {
+	client := newFakeClient()
+	fetcher := &fakeFetcher{prefixes: []string{"104.16.0.0/13", "2400:cb00::/32"}}
+	r := newProviderReconciler(client, fetcher)
+	rule := RuleConfig{RuleID: "default", Providers: []string{"cloudflare"}}
+
+	r.Rule(rule)
+	r.Unroutable, _ = NewUnroutableSet(append(append([]string{}, DefaultUnroutableCIDRs...), "104.20.0.0/16"))
+
+	res := r.Rule(rule)
+
+	if len(res.Removed) != 1 || res.Removed[0] != "104.16.0.0/13" {
+		t.Fatalf("removed %v, want only the overlapping prefix", res.Removed)
+	}
+	entries, _ := client.ListWhitelistIP("default")
+	if len(entries) != 1 || entries[0].IP != "2400:cb00::/32" {
+		t.Errorf("whitelist holds %v, want the prefix nobody blocked still authorised", entries)
+	}
+}
+
+// The cache is kept rather than cleared when it fails the test, because it is
+// upstream data and not an authorisation, and it is tested again before every
+// use. Taking the range back out of unroutable_cidrs therefore restores the
+// prefixes on the next tick instead of at the next scheduled fetch, which can
+// be twelve hours away.
+func TestARejectedCacheAuthorisesAgainOnceTheBlockedRangeIsRemoved(t *testing.T) {
+	client := newFakeClient()
+	fetcher := &fakeFetcher{prefixes: []string{"104.16.0.0/13"}}
+	r := newProviderReconciler(client, fetcher)
+	rule := RuleConfig{RuleID: "default", Providers: []string{"cloudflare"}}
+
+	r.Rule(rule)
+	r.Unroutable, _ = NewUnroutableSet(append(append([]string{}, DefaultUnroutableCIDRs...), "104.20.0.0/16"))
+	r.Rule(rule)
+	r.Unroutable, _ = NewUnroutableSet(DefaultUnroutableCIDRs)
+
+	res := r.Rule(rule)
+
+	if fetcher.calls != 1 {
+		t.Fatalf("calls = %d, want no refetch: the recovery must come from the cache", fetcher.calls)
+	}
+	if len(res.Added) != 1 || res.Added[0] != "104.16.0.0/13" {
+		t.Errorf("added %v, want the prefix authorised again", res.Added)
+	}
+	if len(res.Providers) != 1 || res.Providers[0].Error != "" {
+		t.Errorf("status = %+v, want the provider reported healthy again", res.Providers)
 	}
 }
