@@ -143,23 +143,65 @@ function renderStatusMsg() {
     }
 }
 
+// A week of staleness turns the row red. Orange says "degraded but holding",
+// which is true for hours or days; past that it is an authorisation nobody has
+// checked, and it should stop looking survivable.
+const STALE_ALARM_MS = 7 * 24 * 60 * 60 * 1000;
+
+function renderProviderRow($t, id, status) {
+    const st = status || {};
+    const prefixes = st.prefixes || [];
+    const listText = prefixes.length
+        ? '<div class="ipList">' + prefixes.map(esc).join("<br>") + "</div>"
+        : '<span class="muted">—</span>';
+
+    let statusCls, statusTxt, note = "";
+    if (!st.error) {
+        statusCls = "status-ok";
+        statusTxt = '<i class="check circle icon"></i> ok';
+    } else if (prefixes.length > 0) {
+        const age = st.last_success ? Date.now() - new Date(st.last_success).getTime() : 0;
+        statusCls = age > STALE_ALARM_MS ? "status-stale-long" : "status-stale";
+        statusTxt = '<i class="hourglass half icon"></i> stale' + (st.stale_for ? " — " + esc(st.stale_for) : "");
+        note = '<div class="graceNote">Cannot refresh the list (' + esc(st.error) +
+               ') — the ranges below stay authorised.</div>';
+    } else {
+        statusCls = "status-error";
+        statusTxt = '<i class="times circle icon"></i> failed';
+        note = '<div class="graceNote">' + esc(st.error) + ' — nothing is authorised for this provider.</div>';
+    }
+
+    $t.append(`
+        <tr>
+            <td><i class="cloud icon"></i> ${esc(st.name || id)}${note}</td>
+            <td>${listText}</td>
+            <td class="${statusCls}">${statusTxt}</td>
+            <td><button class="ui icon basic mini red button removeProviderBtn" data-provider="${esc(id)}"><i class="trash alternate icon"></i></button></td>
+        </tr>`);
+}
+
 function renderTable() {
     const cfg = cfgRule(currentRule);
     const res = resultFor(currentRule) || {};
     const resolved = res.Resolved || {};
     const grace = res.Grace || {};
     const offline = res.Offline || {};
+    const providers = res.Providers || [];
     const $t = $("#fqdnTable").empty();
     const fqdns = (cfg && cfg.fqdns) || [];
+    const configuredProviders = (cfg && cfg.providers) || [];
 
-    if (fqdns.length === 0) {
+    if (fqdns.length === 0 && configuredProviders.length === 0) {
         // "Nothing configured" and "we cannot ask" look identical from here,
         // and only one of them is a green tick.
         $t.append(unreachable
             ? '<tr><td colspan="4"><i class="exclamation triangle icon"></i> Cannot reach the plugin — this list is unknown, not empty.</td></tr>'
-            : '<tr><td colspan="4"><i class="green check circle icon"></i> No FQDNs synced for this rule yet. Add one above.</td></tr>');
+            : '<tr><td colspan="4"><i class="green check circle icon"></i> Nothing synced for this rule yet. Add an FQDN or a provider above.</td></tr>');
         return;
     }
+
+    configuredProviders.forEach(id => renderProviderRow($t, id, providers.find(p => p.id === id)));
+
     fqdns.forEach(fqdn => {
         const ips = resolved[fqdn];
         const ok = ips && ips.length > 0;
@@ -226,9 +268,54 @@ function loadState() {
         if (!$("#unroutableInput").is(":focus")) {
             $("#unroutableInput").val((state.unroutable_cidrs || []).join(", "));
         }
+        if (!$("#providerIntervalInput").is(":focus")) {
+            $("#providerIntervalInput").val(state.provider_interval_seconds);
+        }
+        populateProviderDropdown(state.available_providers || []);
         $("#lastRun").text(state.last_run ? "Last sync: " + new Date(state.last_run).toLocaleString() : "No sync yet");
         renderTable();
     }, setUnreachable);
+}
+
+// The registry comes from /api/state, so the panel knows no provider by name
+// of its own and adding one never means editing this file.
+//
+// Unlike populateRuleDropdown, this runs on every 5s poll (loadState), not
+// once at startup, so it cannot unconditionally tear the control down and
+// rebuild it the way that one does: KnownProviders is a compile-time
+// constant, so in practice the id list never changes while the plugin is
+// running, and the guard below turns every poll after the first into a
+// no-op comparison instead of an init call that would fight the operator
+// for a menu they currently have open or a value they just picked.
+let providerDropdownIds = [];
+let providerDropdownReady = false;
+
+function populateProviderDropdown(available) {
+    const ids = available.map(p => p.id);
+    if (providerDropdownReady && ids.length === providerDropdownIds.length &&
+        ids.every((id, i) => id === providerDropdownIds[i])) {
+        return; // the registry has not changed since the last draw
+    }
+    providerDropdownIds = ids;
+
+    const current = providerDropdownReady ? $("#providerSelect").dropdown("get value") : null;
+    const $menu = $("#providerMenu").empty();
+    available.forEach(p => {
+        $menu.append(`<div class="item" data-value="${esc(p.id)}">${esc(p.name)}</div>`);
+    });
+
+    if (!providerDropdownReady) {
+        $("#providerSelect").dropdown();
+        providerDropdownReady = true;
+    } else {
+        // The menu items changed under an already-initialised dropdown:
+        // resync Semantic's internal item list instead of reinitialising,
+        // which would reset any menu the operator has open right now.
+        $("#providerSelect").dropdown("refresh");
+    }
+    if (current && ids.includes(current)) {
+        $("#providerSelect").dropdown("set selected", current);
+    }
 }
 
 $(function () {
@@ -296,6 +383,27 @@ $(function () {
         notify(merged.length === current.length
             ? "The built-in ranges were already in the list"
             : "Built-in ranges filled in — review, then Save", true);
+    });
+
+    $("#addProviderBtn").on("click", function () {
+        // A native <select> reads with .val(); this control is the same
+        // selection-dropdown markup as #ruleSelector, so its value comes
+        // from Semantic's own API instead.
+        const provider = $("#providerSelect").dropdown("get value");
+        if (!currentRule || !provider) { notify("Choose a provider", false); return; }
+        apiPost("./api/provider/add", { rule_id: currentRule, provider: provider },
+            () => { notify("Provider added", true); loadState(); }, "Add failed");
+    });
+
+    $("#fqdnTable").on("click", ".removeProviderBtn", function () {
+        const provider = $(this).attr("data-provider");
+        apiPost("./api/provider/remove", { rule_id: currentRule, provider: provider },
+            () => { notify("Provider removed", true); loadState(); }, "Remove failed");
+    });
+
+    $("#saveProviderIntervalBtn").on("click", function () {
+        apiPost("./api/provider-interval", { seconds: $("#providerIntervalInput").val() },
+            () => { notify("Provider refresh interval saved", true); loadState(); }, "Save failed");
     });
 
     $("#refreshBtn").on("click", function () {

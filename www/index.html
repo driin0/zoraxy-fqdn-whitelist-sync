@@ -31,6 +31,12 @@
         /* Offline: the DDNS positively reports the device as unreachable.
            Grey, not red: nothing is broken and no action is needed. */
         td.status-offline { color: var(--text_color_secondary, #888); font-weight: bold; }
+        /* Stale: authorising on old information. Orange like grace, because it
+           is the same condition — still authorised, degraded, and it must not
+           read as green. Red past a week: an authorisation whose appearance
+           never worsens is one nobody goes and checks. */
+        td.status-stale { color: #f2711c; font-weight: bold; }
+        td.status-stale-long { color: #db2828; font-weight: bold; }
         #fqdnTable td .graceNote { color: var(--text_color_secondary, #888); font-size: 0.9em; }
         .muted { color: var(--text_color_secondary, #888); }
         #fqdnTable td .ipList { line-height: 1.6; }
@@ -41,14 +47,18 @@
         #saveDnsServersBtn:focus,
         #saveGraceBtn:focus,
         #saveUnroutableBtn:focus,
+        #saveProviderIntervalBtn:focus,
         #restoreUnroutableBtn:focus,
         #refreshBtn:focus,
-        #addFqdnBtn:focus {
+        #addFqdnBtn:focus,
+        #addProviderBtn:focus {
             border: 1px solid var(--button_border_color, #dedede) !important;
         }
         /* Zoraxy's dark theme sets .ui.selection.dropdown { border-color:transparent },
-           so the rule selector blends into the background. Restore a visible border. */
-        body.darkTheme #ruleSelector {
+           so a selection dropdown blends into the background. Restore a visible
+           border on both of this panel's selection dropdowns. */
+        body.darkTheme #ruleSelector,
+        body.darkTheme #providerSelect {
             border-color: var(--button_border_color, #555555) !important;
         }
         /* Input + Save on one row, both full-bordered siblings.
@@ -157,6 +167,20 @@
                             <i class="undo icon"></i> Add built-in ranges
                         </button>
                     </div>
+                    <div class="field">
+                        <label>Provider list refresh (seconds)</label>
+                        <div class="intervalRow">
+                            <input type="number" id="providerIntervalInput" min="3600">
+                            <button class="ui basic button" id="saveProviderIntervalBtn">
+                                <i class="save icon"></i> Save
+                            </button>
+                        </div>
+                        <p class="muted" style="margin-top:0.4em;">
+                            How often published CDN ranges are refetched. They change
+                            about twice a year, so the minimum is one hour. "Refresh now"
+                            refetches immediately.
+                        </p>
+                    </div>
                 </div>
                 <button class="ui basic fluid button" id="refreshBtn" style="margin-top:0.6em;">
                     <i class="green refresh icon"></i> Refresh now
@@ -181,6 +205,28 @@
                     </button>
                 </div>
 
+                <h4>Add provider ranges</h4>
+                <div class="ui form">
+                    <div class="field">
+                        <label>Provider</label>
+                        <!-- A plain <select class="ui dropdown"> here does not self-style or
+                             respond to clicks: Semantic UI never initialises a control on its
+                             own. Built as the same selection-dropdown markup as #ruleSelector
+                             (menu div of data-value items, driven by app.js) so this panel
+                             stays visually one thing instead of one native control sitting in
+                             an otherwise Semantic UI. -->
+                        <div class="ui selection dropdown" id="providerSelect">
+                            <input type="hidden" name="provider">
+                            <i class="dropdown icon"></i>
+                            <div class="default text">Select a provider</div>
+                            <div class="menu" id="providerMenu"></div>
+                        </div>
+                    </div>
+                    <button class="ui basic green button" id="addProviderBtn">
+                        <i class="green add icon"></i> Add provider
+                    </button>
+                </div>
+
                 <div class="ui message">
                     <i class="ui info circle icon"></i> How the sync works
                     <div class="ui bulleted list">
@@ -188,12 +234,14 @@
                         <div class="item">Fail-closed: if a name stops resolving, its IPs are removed.</div>
                         <div class="item">An FQDN resolving into a never-authorise range (e.g. <code>192.0.2.1</code>) is treated as offline: nothing is whitelisted and its previous IP is removed at once.</div>
                         <div class="item">Manually-added whitelist entries are never touched.</div>
+                        <div class="item">A provider's published ranges are refetched on their own slower timer and added the same way, tagged <code>fqdn-sync:&lt;provider&gt;</code>.</div>
+                        <div class="item">If a provider list cannot be fetched, its ranges stay authorised and the row is marked stale — a fetch failure never revokes access.</div>
                     </div>
                 </div>
 
                 <table class="ui unstackable basic celled table">
                     <thead>
-                        <tr><th>FQDN</th><th>Resolved IPs</th><th>Status</th><th>Remove</th></tr>
+                        <tr><th>Source</th><th>Addresses</th><th>Status</th><th>Remove</th></tr>
                     </thead>
                     <tbody id="fqdnTable"></tbody>
                 </table>
