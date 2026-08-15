@@ -78,17 +78,23 @@ func canonicalEntry(entry string) string {
 }
 
 // ownedAddressIsUnroutable reports whether a canonical entry from ownedBy —
-// always a CIDR host form ("a/32" or "a/128"), since that is the only shape
-// this plugin ever writes — falls in the blocklist. Unroutable.Contains takes
-// a bare address, so the mask is stripped first via net.ParseCIDR; a value
-// that fails to parse as a CIDR (which should not happen for an owned entry)
-// falls back to being tested as-is rather than silently passing the filter.
+// a CIDR, either an FQDN's resolved address in host form ("a/32", "a/128") or
+// a provider's own prefix such as "104.16.0.0/13" — falls in the blocklist.
+// Overlaps is the test that is correct for both shapes: for a /32 or /128 it
+// agrees exactly with Contains, since a single-host prefix can only ever be
+// identical to or contained in a blocked range, never straddle its edge.
+// For a wider provider prefix, Overlaps is the only correct test — Contains
+// on the bare network address misses the case where only part of the prefix
+// (not its first address) falls inside a range the operator adds later, or
+// where the provider prefix is the wider one and contains the blocked range.
+// A value that fails to parse as a CIDR (which should not happen for an
+// owned entry) falls back to Contains rather than silently passing the
+// filter.
 func ownedAddressIsUnroutable(u *UnroutableSet, canonical string) bool {
-	host, _, err := net.ParseCIDR(canonical)
-	if err != nil {
+	if _, _, err := net.ParseCIDR(canonical); err != nil {
 		return u.Contains(canonical)
 	}
-	return u.Contains(host.String())
+	return u.Overlaps(canonical)
 }
 
 // keepableOwned returns the owned entries that may still be authorised.
@@ -98,7 +104,9 @@ func ownedAddressIsUnroutable(u *UnroutableSet, canonical string) bool {
 // there — an operator adding a range to unroutable_cidrs while a source is
 // already failing, or a sentinel surviving an upgrade. Both the FQDN grace
 // path and the provider fallback path go through here, which is the one piece
-// the two passes genuinely share.
+// the two passes genuinely share, and why it must reject on overlap rather
+// than on bare membership: the fallback path is exactly where a provider
+// prefix already on the whitelist gets re-evaluated against the blocklist.
 func keepableOwned(u *UnroutableSet, owned []string) []string {
 	if len(owned) == 0 {
 		return nil
@@ -145,6 +153,13 @@ type providerState struct {
 	lastSuccess time.Time
 	nextAttempt time.Time
 	lastErr     string
+	// lastForcedSeen is stamped with r.now() whenever a forced cycle attempts
+	// this provider. It exists only so shouldAttempt can tell "already handled
+	// this forced cycle" apart from "still due" — without it, forceThisCycle
+	// stays true for every rule in the cycle, and a provider shared by two
+	// rules (or failing, and so never advancing nextAttempt) would be fetched
+	// once per rule instead of once per cycle.
+	lastForcedSeen time.Time
 }
 
 func NewReconciler(client ZoraxyClient, resolver Resolver, grace time.Duration) *Reconciler {
@@ -282,7 +297,22 @@ func (r *Reconciler) Rule(rule RuleConfig) ReconcileResult {
 			// what is owned, say so. Revoking would take a site down over a
 			// downgrade.
 			st.lastErr = fmt.Sprintf("unknown provider %q", id)
+		case r.Fetcher == nil:
+			// Reachable today: main.go constructs the Reconciler with no
+			// Fetcher, and Task 7 is what assigns one. An invariant that
+			// depends on the caller having wired a field is not an
+			// invariant — a hand-edited "providers" key must not panic the
+			// reconcile loop, it must fail like any other fetch.
+			st.lastErr = "no provider fetcher configured"
 		case r.shouldAttempt(st):
+			// Stamped before the fetch, not after: a forced cycle must count
+			// this as "attempted" whether the fetch that follows succeeds or
+			// fails, or a failing provider on N rules would be retried N
+			// times under force (it already can't happen on the schedule
+			// path, since nextAttempt itself blocks a same-cycle repeat).
+			if r.forceThisCycle {
+				st.lastForcedSeen = r.now()
+			}
 			prefixes, err := r.Fetcher.Fetch(provider)
 			if err == nil {
 				err = validateAgainstUnroutable(prefixes, r.Unroutable)
@@ -294,7 +324,15 @@ func (r *Reconciler) Rule(rule RuleConfig) ReconcileResult {
 				st.prefixes = prefixes
 				st.lastSuccess = r.now()
 				st.lastErr = ""
-				st.nextAttempt = r.now().Add(r.ProviderPeriod)
+				// A zero ProviderPeriod — the field's own zero value before
+				// Task 7 wires it from config each cycle — must not read as
+				// "due again immediately"; that would collapse the schedule
+				// into a fetch on every tick.
+				period := r.ProviderPeriod
+				if period <= 0 {
+					period = time.Duration(DefaultProviderIntervalSeconds) * time.Second
+				}
+				st.nextAttempt = r.now().Add(period)
 			}
 		}
 
@@ -396,8 +434,16 @@ func (r *Reconciler) providerStateFor(id string) *providerState {
 
 // shouldAttempt answers "is it time to talk to this provider?". A zero
 // nextAttempt means it has never been fetched, so the first cycle always does.
+//
+// The force branch is gated on lastForcedSeen rather than firing unconditionally:
+// r.lastForced is stamped once per forced cycle (in All), before any rule
+// runs, so "lastForcedSeen is before r.lastForced" is true exactly for a
+// provider not yet attempted this forced cycle. Without that gate, the same
+// provider configured on two rules — or one still failing, so nextAttempt
+// never moves past now — would be fetched once per rule instead of once per
+// cycle.
 func (r *Reconciler) shouldAttempt(st *providerState) bool {
-	if r.forceThisCycle {
+	if r.forceThisCycle && st.lastForcedSeen.Before(r.lastForced) {
 		return true
 	}
 	return !r.now().Before(st.nextAttempt)

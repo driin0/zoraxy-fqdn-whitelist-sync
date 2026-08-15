@@ -1074,3 +1074,96 @@ func TestProviderStateIsForgottenWhenDeconfigured(t *testing.T) {
 		t.Errorf("calls = %d, want the re-added provider to fetch afresh", fetcher.calls)
 	}
 }
+
+// Fix round 1, F1: forceThisCycle used to stay true for every rule in the
+// cycle, so a provider shared by two rules was fetched twice under a forced
+// refresh instead of once. A failing provider on N rules would have been
+// retried N times inside the same cycle for the same reason.
+func TestForcedRefreshFetchesASharedProviderOnceNotOncePerRule(t *testing.T) {
+	client := newFakeClient()
+	fetcher := &fakeFetcher{prefixes: []string{"104.16.0.0/13"}}
+	r := newProviderReconciler(client, fetcher)
+	cfg := &Config{Rules: []RuleConfig{
+		{RuleID: "default", Providers: []string{"cloudflare"}},
+		{RuleID: "other", Providers: []string{"cloudflare"}},
+	}}
+
+	r.All(cfg, true)
+
+	if fetcher.calls != 1 {
+		t.Errorf("calls = %d, want exactly 1 for one provider shared by two rules under force", fetcher.calls)
+	}
+}
+
+// Fix round 1, F2: main.go constructs the Reconciler before Task 7 assigns a
+// Fetcher, so a hand-edited "providers" key must fail like an ordinary fetch
+// rather than dereference a nil interface and kill the reconcile-loop
+// goroutine.
+func TestNilFetcherBehavesLikeAFailedFetchInsteadOfPanicking(t *testing.T) {
+	client := newFakeClient()
+	client.entries["default"] = []WhitelistEntry{
+		{EntryType: 1, IP: "104.16.0.0/13", Comment: MarkerPrefix + "cloudflare"},
+	}
+	r := NewReconciler(client, &fakeResolver{m: map[string][]string{}}, 0)
+	r.Unroutable, _ = NewUnroutableSet(DefaultUnroutableCIDRs)
+	// r.Fetcher intentionally left nil.
+
+	res := r.Rule(RuleConfig{RuleID: "default", Providers: []string{"cloudflare"}})
+
+	if len(res.Removed) != 0 {
+		t.Errorf("removed %v, want nothing removed", res.Removed)
+	}
+	if len(res.Providers) != 1 || res.Providers[0].Error == "" || len(res.Providers[0].Prefixes) != 1 {
+		t.Errorf("status = %+v, want an error with the owned entry still reported as held", res.Providers)
+	}
+}
+
+// Fix round 1, F3: before Task 7 wires ProviderPeriod from config each cycle,
+// the field's zero value must not mean "due again immediately" — that would
+// turn every tick into a fetch instead of honouring any interval at all.
+func TestZeroProviderPeriodDoesNotForceARefetchEveryCycle(t *testing.T) {
+	client := newFakeClient()
+	fetcher := &fakeFetcher{prefixes: []string{"104.16.0.0/13"}}
+	r := NewReconciler(client, &fakeResolver{m: map[string][]string{}}, 0)
+	r.Fetcher = fetcher
+	r.Unroutable, _ = NewUnroutableSet(DefaultUnroutableCIDRs)
+	// r.ProviderPeriod intentionally left at its zero value.
+	rule := RuleConfig{RuleID: "default", Providers: []string{"cloudflare"}}
+
+	r.Rule(rule)
+	if fetcher.calls != 1 {
+		t.Fatalf("first cycle made %d calls, want 1", fetcher.calls)
+	}
+	r.Rule(rule)
+	if fetcher.calls != 1 {
+		t.Errorf("calls = %d, want 1 — a zero ProviderPeriod must not force a refetch on every cycle", fetcher.calls)
+	}
+}
+
+// Fix round 1, F4: ownedAddressIsUnroutable used to test only a provider
+// prefix's bare network address for membership in the blocklist, which is
+// the wrong question for anything wider than a single host. A /13 already
+// whitelisted from Cloudflare, and a /16 the operator later adds to
+// unroutable_cidrs that falls entirely inside it, must be caught by overlap
+// even though the /13's own network address sits outside the /16 — the exact
+// case Contains missed and the README's "never authorises an unroutable
+// address" promise depends on.
+func TestOwnedProviderPrefixOverlappingANewlyBlockedRangeIsRevoked(t *testing.T) {
+	client := newFakeClient()
+	client.entries["default"] = []WhitelistEntry{
+		{EntryType: 1, IP: "104.16.0.0/13", Comment: MarkerPrefix + "cloudflare"},
+	}
+	fetcher := &fakeFetcher{err: fmt.Errorf("connection refused")}
+	r := newProviderReconciler(client, fetcher)
+	blocklist := append(append([]string{}, DefaultUnroutableCIDRs...), "104.20.0.0/16")
+	r.Unroutable, _ = NewUnroutableSet(blocklist)
+
+	res := r.Rule(RuleConfig{RuleID: "default", Providers: []string{"cloudflare"}})
+
+	if len(res.Removed) != 1 || res.Removed[0] != "104.16.0.0/13" {
+		t.Errorf("removed %v, want the /13 revoked: it overlaps the newly blocked /16", res.Removed)
+	}
+	if len(res.Providers) != 1 || len(res.Providers[0].Prefixes) != 0 {
+		t.Errorf("status = %+v, want nothing reported as held", res.Providers)
+	}
+}
