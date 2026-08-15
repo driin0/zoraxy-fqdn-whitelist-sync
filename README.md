@@ -9,7 +9,7 @@ Built for the case where the people who must reach a service sit behind
 dynamic residential addresses — a DDNS name per site, and the whitelist keeps
 up on its own.
 
-![The plugin's panel in Zoraxy. Three sites and an on-call laptop are synced into the Default rule's whitelist — one site resolving to two addresses, the laptop to both an IPv4 and an IPv6 — while a roaming laptop whose DDNS has fallen back to a sentinel address is reported offline and left unauthorised.](docs/panel.png)
+![The plugin's panel in Zoraxy. Cloudflare's twenty-two published ranges and four FQDNs are synced into the Default rule's whitelist — one name resolving to two addresses, another to both an IPv4 and an IPv6 — while a roaming laptop whose DDNS has fallen back to a sentinel address is reported offline and left unauthorised. Under the table, an expanded "How the sync works" panel lists what the plugin guarantees.](docs/panel.png)
 
 ## What it guarantees
 

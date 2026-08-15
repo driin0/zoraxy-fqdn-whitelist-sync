@@ -22,28 +22,145 @@
             margin-bottom: 1.2em;
         }
         .fqdnSyncBanner small { font-weight: normal; opacity: 0.85; }
-        td.status-ok { color: #21ba45; font-weight: bold; }
-        td.status-error { color: #db2828; font-weight: bold; }
-        td.status-pending { color: var(--text_color_secondary, #888); }
+        /* Scoped on #fqdnTable and marked important on purpose. Zoraxy's dark
+           theme carries `body.darkTheme .ui.table tbody td { color: #fff
+           !important }`, which flattened every status to white — ok, offline,
+           stale, blocked and failed all the same colour, which is the one thing
+           this vocabulary exists not to do. An id outranks that rule's three
+           classes, and important is needed to answer important. */
+        #fqdnTable td.status-ok { color: #21ba45 !important; font-weight: bold; }
+        #fqdnTable td.status-error { color: #db2828 !important; font-weight: bold; }
+        #fqdnTable td.status-pending { color: var(--text_color_secondary, #888) !important; }
         /* Grace: DNS is failing but the last known IPs are still authorised —
            deliberately neither green nor red, so degradation is not silent. */
-        td.status-grace { color: #f2711c; font-weight: bold; }
+        #fqdnTable td.status-grace { color: #f2711c !important; font-weight: bold; }
         /* Offline: the DDNS positively reports the device as unreachable.
            Grey, not red: nothing is broken and no action is needed. */
-        td.status-offline { color: var(--text_color_secondary, #888); font-weight: bold; }
+        #fqdnTable td.status-offline { color: var(--text_color_secondary, #888) !important; font-weight: bold; }
         /* Stale: authorising on old information. Orange like grace, because it
            is the same condition — still authorised, degraded, and it must not
            read as green. Red past a week: an authorisation whose appearance
            never worsens is one nobody goes and checks. */
-        td.status-stale { color: #f2711c; font-weight: bold; }
+        #fqdnTable td.status-stale { color: #f2711c !important; font-weight: bold; }
         /* Orange like stale: attention, not alarm. The revocation was asked for
            by the operator's own never-authorise list, so it is a degraded state
            rather than a failure — the label and the note say which. */
-        td.status-blocked { color: #f2711c; font-weight: bold; }
-        td.status-stale-long { color: #db2828; font-weight: bold; }
+        #fqdnTable td.status-blocked { color: #f2711c !important; font-weight: bold; }
+        #fqdnTable td.status-stale-long { color: #db2828 !important; font-weight: bold; }
+        /* The colour is on the cell, but the label and its icon are elements of
+           their own, and the dark theme paints every span and every icon
+           (`body.darkTheme p, body.darkTheme span`). Without this the cell is
+           green and the word inside it is white — which is what the operator
+           actually reads. Inherit rather than restate the colour, so the eight
+           status rules above stay the only place a status colour is written. */
+        #fqdnTable td[class*="status-"] > *,
+        #fqdnTable td[class*="status-"] > * > i.icon { color: inherit !important; }
         #fqdnTable td .graceNote { color: var(--text_color_secondary, #888); font-size: 0.9em; }
         .muted { color: var(--text_color_secondary, #888); }
-        #fqdnTable td .ipList { line-height: 1.6; }
+
+        /* The two add-forms share one row and drop to two when the panel is
+           narrow. 240px is where a field plus its button stops fitting. */
+        .addRow { display: flex; gap: 1.2em; align-items: flex-end; flex-wrap: wrap; margin-bottom: 1.4em; }
+        .addRow > .field { flex: 1 1 260px; min-width: 240px; margin: 0 !important; }
+        .addLine { display: flex; gap: 0.5em; align-items: stretch; }
+        .addLine > :first-child { flex: 1 1 auto; min-width: 0; }
+        /* Semantic gives a selection dropdown `min-width: 14em`, three classes
+           deep, so the rule above cannot shrink it: at a narrow panel width the
+           dropdown held its 196px, the button beside it kept its own width, and
+           the pair pushed 38px past the edge into a horizontal scrollbar. The
+           input next to it shrinks fine, which is what made the two halves of
+           the row behave differently. */
+        .addLine > .ui.selection.dropdown { min-width: 0; }
+        .addLine > .ui.button { white-space: nowrap; }
+
+        /* Sits under the table, where the eye lands after reading the rows.
+           Styled as a control rather than a caption: in secondary grey it read
+           as something to ignore, which is the opposite of the intent. */
+        details.howto { margin-top: 1em; }
+        details.howto > summary {
+            cursor: pointer;
+            display: inline-flex; align-items: center; gap: 0.45em;
+            padding: 0.45em 0.9em;
+            border: 1px solid var(--button_border_color, #dedede);
+            border-radius: 0.35em;
+            color: var(--text_color, inherit);
+            font-weight: 600;
+        }
+        /* inline-flex happens to hide the UA disclosure triangle in Chrome and
+           Firefox, but older WebKit paints ::-webkit-details-marker regardless —
+           which would put a native triangle beside our own chevron. Same pair of
+           rules as details.addrs uses. */
+        details.howto > summary { list-style: none; }
+        details.howto > summary::-webkit-details-marker { display: none; }
+        details.howto > summary:hover { border-color: var(--text_color_secondary, #888); }
+        details.howto[open] > summary { margin-bottom: 0.6em; }
+        /* With the native marker suppressed above, this is the disclosure
+           triangle put back on our terms, and turned when open. */
+        details.howto[open] > summary .chevron { transform: rotate(180deg); }
+        /* Two corrections, both measured rather than eyeballed.
+
+           margin: Semantic gives every icon its own right margin, which adds to
+           the flex gap on one side only and leaves a trailing 3.5px inside the
+           padding — the label sat closer to the chevron than to the info icon
+           and the box looked wider on the right. The gap does all the spacing.
+
+           line-height: the icons inherit the panel's 20px line-height while
+           their own box is 1em tall, so the glyph is laid out on the baseline of
+           a taller line and painted below its box — measured, it overflowed the
+           box by a pixel and sat 2px low. Centring the box therefore did not
+           centre what you see. At line-height 1 the glyph sits in its own box.
+
+           A third correction was tried and removed: a 0.031em nudge derived from
+           the font's ascent, descent and cap height. Measuring the painted
+           pixels afterwards contradicted the derivation — the icons land on the
+           button's centre either way — and the premise was wrong anyway, since
+           an icon font's glyphs are not laid out to Latin cap-height metrics.
+           What is left below is the two corrections that pixel measurement
+           actually confirmed. */
+        details.howto > summary i.icon {
+            margin: 0;
+            line-height: 1;
+        }
+        details.howto > summary .chevron { transition: transform 0.15s; }
+
+        /* "offline" and "unresolved" are wider than the column the table gives
+           them by default, so the icon ended up on one line and the word on the
+           next. The label never splits; a longer suffix (the stale age) still
+           wraps after it. Measured: 91px for the longest single label. */
+        #fqdnTable td .statusLabel { white-space: nowrap; }
+        .fqdnTableWrap thead th:nth-child(3) { min-width: 7.5em; }
+        /* The message keeps its own margin inside the accordion, where the
+           summary already provides the spacing. Whether the accordion starts
+           open is decided in app.js — see applyHowtoDefault. */
+        details.howto .ui.message { margin-top: 0; }
+
+        /* Addresses wrap instead of stacking one per line. A provider publishes
+           tens of prefixes and an FQDN can resolve to a dozen; one per line made
+           a single row taller than the whole rest of the panel. */
+        #fqdnTable td { vertical-align: top; }
+        /* max-height: even expanded, a long list stays inside a box — the
+           fetcher accepts up to 512 prefixes, which would be some 130 wrapped
+           lines. */
+        #fqdnTable td .ipList {
+            display: flex; flex-wrap: wrap; gap: 0.15em 0.8em; line-height: 1.7;
+            max-height: 13em; overflow-y: auto;
+        }
+        #fqdnTable td .ipList span { white-space: nowrap; }
+        /* Same affordance as the how-it-works control — a chevron that turns —
+           but deliberately NOT a flex container like it:
+           in a narrow column flex makes each run of text its own item that
+           shrinks on its own, and the summary came apart into ragged columns.
+           Plain inline flow wraps like the sentence it is. */
+        details.addrs > summary { cursor: pointer; list-style: none; color: var(--text_color_secondary, #888); }
+        details.addrs > summary::-webkit-details-marker { display: none; }
+        details.addrs > summary b { color: var(--text_color, inherit); font-weight: 600; }
+        details.addrs > summary .chevron {
+            transition: transform 0.15s;
+            vertical-align: middle; margin: 0 0 0 0.35em;
+        }
+        details.addrs[open] > summary .chevron { transform: rotate(180deg); }
+        details.addrs[open] > summary .hint { display: none; }
+        details.addrs[open] > summary { margin-bottom: 0.45em; }
         /* Zoraxy's dark theme sets .ui.basic.button:focus { border:none }, so a
            clicked (still-focused) button looks borderless. ID specificity wins
            over that rule and keeps our action buttons outlined on focus. */
@@ -91,14 +208,14 @@
     <div class="standardContainer">
         <div class="fqdnSyncBanner">
             <i class="sync alternate icon"></i> FQDN Whitelist Sync
-            <small id="bannerSub">&mdash; keeps a rule's whitelist in sync with resolved FQDN IPs</small>
+            <small id="bannerSub">&mdash; keeps a rule's whitelist in sync with resolved FQDN IPs and published CDN ranges</small>
         </div>
 
         <div class="ui stackable grid">
             <!-- Left: rule selector + global controls -->
             <div class="five wide column">
                 <h4 class="ui header">Select a rule to configure</h4>
-                <p>Pick an access rule; its whitelist is kept in sync with the FQDNs you add here.</p>
+                <p>Pick an access rule; its whitelist is kept in sync with the FQDNs and provider ranges you add here.</p>
 
                 <div class="ui selection fluid dropdown" id="ruleSelector">
                     <input type="hidden" name="rule">
@@ -113,7 +230,7 @@
 
                 <div class="ui form">
                     <div class="field">
-                        <label>Refresh interval (seconds)</label>
+                        <label>FQDN refresh interval (seconds)</label>
                         <!-- input and Save are separate siblings (not a fused
                              ui action input) so each keeps its own full border -->
                         <div class="intervalRow">
@@ -133,6 +250,8 @@
                         </div>
                         <p class="muted" style="margin-top:0.4em;">
                             Comma-separated, tried in order. Empty = system resolver.
+                            Used for FQDN lookups only — provider lists are always
+                            downloaded through the system resolver.
                         </p>
                     </div>
                     <div class="field">
@@ -144,7 +263,7 @@
                             </button>
                         </div>
                         <p class="muted" style="margin-top:0.4em;">
-                            Applies when the DNS server is unreachable. 0 = remove at once.
+                            FQDNs only, and only when the DNS server is unreachable — a provider whose list cannot be fetched keeps its ranges regardless. 0 = remove at once.
                             A name that no longer exists is always removed at once.
                             Restarting the plugin restarts this window.
                         </p>
@@ -159,8 +278,9 @@
                         </div>
                         <p class="muted" style="margin-top:0.4em;">
                             Comma-separated CIDRs. An FQDN resolving only into these is
-                            shown as offline and its previous IP is revoked at once.
-                            Empty = authorise every resolved address.
+                            shown as offline and its previous IP is revoked at once; a
+                            provider prefix overlapping them is refused and revoked the
+                            same way. Empty = authorise everything a source yields.
                         </p>
                         <!-- Recovery path: once the stored list is empty the
                              defaults are no longer in the field, and retyping
@@ -196,60 +316,74 @@
             <!-- Right: selected rule's FQDNs -->
             <div class="eleven wide column">
                 <h2 id="ruleTitle">FQDN Sync</h2>
-                <p>These FQDNs are resolved on a timer; their IPs are added to this rule's whitelist.</p>
+                <!-- "on their own timers", plural, because they genuinely differ — thirty
+                     seconds for a name, twelve hours for a published range list — and this
+                     is the one line where that can be said in passing rather than explained. -->
+                <p>FQDNs are re-resolved and provider ranges refetched on their own timers; both feed this rule's whitelist.</p>
                 <div class="ui divider"></div>
 
-                <h4>Add FQDN</h4>
-                <div class="ui form">
-                    <div class="field">
-                        <label>FQDN</label>
-                        <input type="text" id="fqdnInput" placeholder="host.example.net">
-                    </div>
-                    <button class="ui basic green button" id="addFqdnBtn">
-                        <i class="green add icon"></i> Add FQDN
-                    </button>
-                </div>
+                <!-- Both add-forms on one row, above the table. The table is what an
+                     operator opens this panel to read; stacking two labelled forms and the
+                     explanation above it pushed the first row below the fold, which is the
+                     one thing this panel cannot afford to do.
 
-                <h4>Add provider ranges</h4>
-                <div class="ui form">
+                     The row is a .ui.form and each half a .field on purpose: Semantic styles
+                     inputs through that context, and a bare <input> lifted out of it renders
+                     with the host page's default border instead of the panel's. -->
+                <div class="ui form addRow">
                     <div class="field">
-                        <label>Provider</label>
-                        <!-- A plain <select class="ui dropdown"> here does not self-style or
-                             respond to clicks: Semantic UI never initialises a control on its
-                             own. Built as the same selection-dropdown markup as #ruleSelector
-                             (menu div of data-value items, driven by app.js) so this panel
-                             stays visually one thing instead of one native control sitting in
-                             an otherwise Semantic UI. -->
-                        <div class="ui selection dropdown" id="providerSelect">
-                            <input type="hidden" name="provider">
-                            <i class="dropdown icon"></i>
-                            <div class="default text">Select a provider</div>
-                            <div class="menu" id="providerMenu"></div>
+                        <label>Add FQDN</label>
+                        <div class="addLine">
+                            <input type="text" id="fqdnInput" placeholder="host.example.net">
+                            <button class="ui basic green button" id="addFqdnBtn">
+                                <i class="green add icon"></i> Add FQDN
+                            </button>
                         </div>
                     </div>
-                    <button class="ui basic green button" id="addProviderBtn">
-                        <i class="green add icon"></i> Add provider
-                    </button>
-                </div>
-
-                <div class="ui message">
-                    <i class="ui info circle icon"></i> How the sync works
-                    <div class="ui bulleted list">
-                        <div class="item">Each FQDN's A/AAAA records are resolved every interval and added to the whitelist, tagged <code>fqdn-sync:&lt;fqdn&gt;</code>.</div>
-                        <div class="item">Fail-closed: if a name stops resolving, its IPs are removed.</div>
-                        <div class="item">An FQDN resolving into a never-authorise range (e.g. <code>192.0.2.1</code>) is treated as offline: nothing is whitelisted and its previous IP is removed at once.</div>
-                        <div class="item">Manually-added whitelist entries are never touched.</div>
-                        <div class="item">A provider's published ranges are refetched on their own slower timer and added the same way, tagged <code>fqdn-sync:&lt;provider&gt;</code>.</div>
-                        <div class="item">If a provider list cannot be fetched, its ranges stay authorised and the row is marked stale — a fetch failure never revokes access.</div>
+                    <div class="field">
+                        <label>Add provider ranges</label>
+                        <div class="addLine">
+                            <!-- A plain <select class="ui dropdown"> here does not self-style or
+                                 respond to clicks: Semantic UI never initialises a control on its
+                                 own. Built as the same selection-dropdown markup as #ruleSelector
+                                 (menu div of data-value items, driven by app.js) so this panel
+                                 stays visually one thing instead of one native control sitting in
+                                 an otherwise Semantic UI. -->
+                            <div class="ui selection dropdown" id="providerSelect">
+                                <input type="hidden" name="provider">
+                                <i class="dropdown icon"></i>
+                                <div class="default text">Select a provider</div>
+                                <div class="menu" id="providerMenu"></div>
+                            </div>
+                            <button class="ui basic green button" id="addProviderBtn">
+                                <i class="green add icon"></i> Add provider
+                            </button>
+                        </div>
                     </div>
                 </div>
 
-                <table class="ui unstackable basic celled table">
+                <table class="ui unstackable basic celled table fqdnTableWrap">
                     <thead>
                         <tr><th>Source</th><th>Addresses</th><th>Status</th><th>Remove</th></tr>
                     </thead>
                     <tbody id="fqdnTable"></tbody>
                 </table>
+
+                <!-- Read once, then never again — so it sits below the table and closed,
+                     rather than costing 250px of the first screen forever. -->
+                <details class="howto">
+                    <summary><i class="info circle icon"></i>How the sync works<i class="chevron down icon"></i></summary>
+                    <div class="ui message">
+                    <div class="ui bulleted list">
+                        <div class="item">Each FQDN's A/AAAA records are resolved every interval and added to the whitelist, tagged <code>fqdn-sync:&lt;fqdn&gt;</code>.</div>
+                        <div class="item">Fail-closed for FQDNs: if a name stops resolving, its IPs are removed once the grace window expires.</div>
+                        <div class="item">An FQDN resolving into a never-authorise range (e.g. <code>192.0.2.1</code>) is treated as offline: nothing is whitelisted and its previous IP is removed at once. A provider prefix that overlaps one is refused and revoked, and the row is marked blocked.</div>
+                        <div class="item">Manually-added whitelist entries are never touched.</div>
+                        <div class="item">A provider's published ranges are refetched on their own slower timer and added the same way, tagged <code>fqdn-sync:&lt;provider&gt;</code>.</div>
+                        <div class="item">If a provider list cannot be fetched, its ranges stay authorised and the row is marked stale — a fetch failure never revokes access.</div>
+                    </div>
+                    </div>
+                </details>
             </div>
         </div>
     </div>

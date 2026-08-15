@@ -148,11 +148,85 @@ function renderStatusMsg() {
 // checked, and it should stop looking survivable.
 const STALE_ALARM_MS = 7 * 24 * 60 * 60 * 1000;
 
+// An icon and its word are one unit: the Status column is narrow enough that
+// "offline" and "unresolved" were breaking between the two, leaving the icon
+// stranded on its own line. Anything appended after this — the stale age — is
+// free to wrap.
+// icon is a Semantic class name and text a fixed label, both literals at every
+// call site. text is escaped anyway: this function has no way to tell a literal
+// from something a future caller derives from the API, and that is exactly how
+// the escaping discipline elsewhere in this file gets quietly broken.
+function statusLabel(icon, text) {
+    return '<span class="statusLabel"><i class="' + icon + ' icon"></i> ' + esc(text) + "</span>";
+}
+
+// Above this many entries an address cell collapses to a count. The threshold
+// is on the count, not on the kind of source: the problem is length, and the
+// kind is only a proxy for it. A provider publishing three ranges should not be
+// hidden, and an FQDN fronted by a CDN that resolves to fifteen addresses
+// should be — Cloudflare's twenty-two happens to be the case that made this
+// visible, not the case the rule is written for. Eight is two wrapped lines at
+// the panel's usual width.
+const COLLAPSE_ABOVE = 8;
+
+// Which sources the operator has opened. renderTable rebuilds every row from
+// scratch on the five-second poll, so without this a list opened by hand would
+// snap shut a few seconds later, repeatedly, while being read.
+const expandedSources = new Set();
+
+// "How the sync works" explains what the plugin is about to do, which is worth
+// a lot before anything is configured and nothing afterwards. So it opens
+// itself on a rule with no sources — there is no table to read there and this
+// is the only thing worth showing — and closes once sources exist, leaving the
+// summary as the way back to it.
+//
+// The default is applied only when the rule or its emptiness actually changes,
+// never on every render. Re-asserting it each cycle would slam the panel shut
+// five seconds after an operator opened it, which is the same defect the
+// address lists have to avoid.
+// Keyed per rule, not a single last-applied value. With one scalar, switching
+// to another rule and back re-applied the default to the first one and closed a
+// panel the operator had opened by hand — the same defect this memo exists to
+// prevent, reached by a different route.
+const howtoAppliedTo = new Map();
+function applyHowtoDefault(ruleID, isEmpty) {
+    // loadRules() paints once before loadState() has answered, so the config is
+    // not merely empty, it is unknown — and opening on that flashes the panel
+    // open for one tick on every load. Same distinction renderTable already
+    // draws for the table body.
+    if (!stateCache) return;
+    if (howtoAppliedTo.get(ruleID) === isEmpty) return;
+    howtoAppliedTo.set(ruleID, isEmpty);
+    const el = document.querySelector("details.howto");
+    if (el) el.open = isEmpty;
+}
+
+// addressCell renders the Addresses column for one source. key identifies the
+// source across re-renders; noun is what its entries are called, because a
+// provider's CIDR blocks and an FQDN's resolved addresses are not the same
+// thing and the summary should not pretend otherwise.
+function addressCell(key, items, noun) {
+    if (!items || items.length === 0) return '<span class="muted">—</span>';
+    const list = '<div class="ipList">' + items.map(v => "<span>" + esc(v) + "</span>").join("") + "</div>";
+    if (items.length <= COLLAPSE_ABOVE) return list;
+    const open = expandedSources.has(key) ? " open" : "";
+    // The invitation disappears once it is open, where it would be telling the
+    // operator to do something they have already done. The chevron stays and
+    // turns, so the control still reads as a control.
+    return '<details class="addrs" data-key="' + esc(key) + '"' + open + ">" +
+        "<summary><b>" + items.length + "</b> " + esc(noun) +
+        '<span class="hint"> — click to show</span>' +
+        '<i class="chevron down icon"></i></summary>' +
+        list + "</details>";
+}
+
 function renderProviderRow($t, id, status) {
     const prefixes = (status && status.prefixes) || [];
-    const listText = prefixes.length
-        ? '<div class="ipList">' + prefixes.map(esc).join("<br>") + "</div>"
-        : '<span class="muted">—</span>';
+    // "ranges", not "published ranges": when the provider is blocked, or its
+    // first fetch after a restart failed, this list is what the whitelist
+    // already held rather than anything the provider is currently known to
+    // publish. The row's note says which case it is.
+    const listText = addressCell("provider:" + id, prefixes, "ranges");
 
     let statusCls, statusTxt, note = "";
     if (!status) {
@@ -163,7 +237,7 @@ function renderProviderRow($t, id, status) {
         // falling into the ok branch below would paint ranges as authorised
         // before anything has actually been fetched.
         statusCls = "status-pending";
-        statusTxt = "pending";
+        statusTxt = statusLabel("clock outline", "pending");
     } else if (status.blocked) {
         // The reconciler refused these ranges because they overlap the
         // never-authorise list, and revoked the ones already whitelisted. The
@@ -172,7 +246,7 @@ function renderProviderRow($t, id, status) {
         // than kept — and false at the exact moment the operator is looking to
         // see whether their edit took effect.
         statusCls = "status-blocked";
-        statusTxt = '<i class="ban icon"></i> blocked';
+        statusTxt = statusLabel("ban", "blocked");
         note = '<div class="graceNote">Ranges overlapping your never-authorise list were revoked (' +
                esc(status.error) + ') — ' +
                (prefixes.length
@@ -181,7 +255,7 @@ function renderProviderRow($t, id, status) {
                "</div>";
     } else if (!status.error) {
         statusCls = "status-ok";
-        statusTxt = '<i class="check circle icon"></i> ok';
+        statusTxt = statusLabel("check circle", "ok");
     } else if (prefixes.length > 0) {
         // last_success empty is not "just refreshed" (age zero) — the
         // provider cache is not persisted across restarts (reconciler.go),
@@ -197,12 +271,14 @@ function renderProviderRow($t, id, status) {
         const ageText = confirmed
             ? (status.stale_for ? " — " + esc(status.stale_for) : "")
             : " — not confirmed since the plugin started";
-        statusTxt = '<i class="hourglass half icon"></i> stale' + ageText;
+        statusTxt = statusLabel("hourglass half", "stale") + ageText;
+        // "the ranges it holds", not "below": above the collapse threshold the
+        // list is behind a summary rather than printed underneath.
         note = '<div class="graceNote">Cannot refresh the list (' + esc(status.error) +
-               ') — the ranges below stay authorised.</div>';
+               ') — the ranges it holds stay authorised.</div>';
     } else {
         statusCls = "status-error";
-        statusTxt = '<i class="times circle icon"></i> failed';
+        statusTxt = statusLabel("times circle", "failed");
         note = '<div class="graceNote">' + esc(status.error) + ' — nothing is authorised for this provider.</div>';
     }
 
@@ -226,6 +302,8 @@ function renderTable() {
     const fqdns = (cfg && cfg.fqdns) || [];
     const configuredProviders = (cfg && cfg.providers) || [];
 
+    applyHowtoDefault(currentRule, fqdns.length === 0 && configuredProviders.length === 0);
+
     if (fqdns.length === 0 && configuredProviders.length === 0) {
         // "Nothing configured" and "we cannot ask" look identical from here,
         // and only one of them is a green tick.
@@ -240,7 +318,7 @@ function renderTable() {
     fqdns.forEach(fqdn => {
         const ips = resolved[fqdn];
         const ok = ips && ips.length > 0;
-        const ipText = ok ? '<div class="ipList">' + ips.map(esc).join("<br>") + "</div>" : '<span class="muted">—</span>';
+        const ipText = ok ? addressCell("fqdn:" + fqdn, ips, "addresses") : '<span class="muted">—</span>';
         const graceLeft = grace[fqdn];
         const offlineIPs = offline[fqdn];
         let statusCls, statusTxt;
@@ -249,19 +327,19 @@ function renderTable() {
             // neither ok nor revoked. Show it, so the operator can tell that
             // access is preserved and for how long.
             statusCls = "status-grace";
-            statusTxt = '<i class="hourglass half icon"></i> grace — ' + esc(graceLeft) + " left";
+            statusTxt = statusLabel("hourglass half", "grace") + " — " + esc(graceLeft) + " left";
         } else if (offlineIPs && offlineIPs.length > 0 && !ok) {
             // The DDNS positively reports the device unreachable (sentinel-only
             // answer): checked before ok, so no routable address left never
             // renders green.
             statusCls = "status-offline";
-            statusTxt = '<i class="power off icon"></i> offline';
+            statusTxt = statusLabel("power off", "offline");
         } else if (ok) {
-            statusCls = "status-ok"; statusTxt = '<i class="check circle icon"></i> ok';
+            statusCls = "status-ok"; statusTxt = statusLabel("check circle", "ok");
         } else if (stateCache && stateCache.last_run) {
-            statusCls = "status-error"; statusTxt = '<i class="times circle icon"></i> unresolved';
+            statusCls = "status-error"; statusTxt = statusLabel("times circle", "unresolved");
         } else {
-            statusCls = "status-pending"; statusTxt = "pending";
+            statusCls = "status-pending"; statusTxt = statusLabel("clock outline", "pending");
         }
         $t.append(`
             <tr>
@@ -429,6 +507,17 @@ $(function () {
         apiPost("./api/provider/add", { rule_id: currentRule, provider: provider },
             () => { notify("Provider added", true); loadState(); }, "Add failed");
     });
+
+    // Remember which address lists are open, so the next repaint restores them.
+    // Delegated because renderTable replaces every row on the five-second poll,
+    // which would otherwise close a list the operator is in the middle of
+    // reading. "toggle" does not bubble, hence the capture phase.
+    document.getElementById("fqdnTable").addEventListener("toggle", function (ev) {
+        const el = ev.target;
+        if (!el.classList || !el.classList.contains("addrs")) return;
+        const key = el.getAttribute("data-key");
+        if (el.open) { expandedSources.add(key); } else { expandedSources.delete(key); }
+    }, true);
 
     $("#fqdnTable").on("click", ".removeProviderBtn", function () {
         const provider = $(this).attr("data-provider");
