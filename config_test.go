@@ -409,6 +409,63 @@ func TestLoadConfigStillRejectsAMalformedFile(t *testing.T) {
 	}
 }
 
+// Loading an existing config must leave the file exactly as it found it. This
+// is what makes upgrading in place safe: the operator replaces the binary,
+// restarts, and the file describing who may reach their services is still the
+// file they wrote. A load that rewrote it would reorder keys, drop anything a
+// newer schema does not model, and put a truncated access policy on the table
+// if the process died mid-write — all for a normalisation that only ever
+// matters in memory.
+//
+// The fixture is chosen to provoke every path that changes the loaded struct:
+// an interval under the floor, the superseded dns_server, and no grace,
+// unroutable or provider keys at all. It is also the shape a config written by
+// v1.1.2 has, which is the upgrade this guards.
+func TestLoadingAConfigNeverRewritesTheFileOnDisk(t *testing.T) {
+	const original = `{
+  "interval_seconds": 5,
+  "dns_server": "10.0.0.1",
+  "rules": [
+    {"rule_id": "default", "fqdns": ["a.example.com"]}
+  ]
+}`
+	path := writeTempConfig(t, original)
+
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("re-reading the config failed: %v", err)
+	}
+	if string(after) != original {
+		t.Errorf("loading rewrote the file.\n--- before ---\n%s\n--- after ---\n%s", original, after)
+	}
+
+	// Without these, a LoadConfig that did nothing whatsoever would pass the
+	// check above. The point is that it normalises and declines to persist it.
+	if cfg.IntervalSeconds != MinIntervalSeconds {
+		t.Errorf("IntervalSeconds = %d, want it clamped to %d", cfg.IntervalSeconds, MinIntervalSeconds)
+	}
+	if !reflect.DeepEqual(cfg.DNSServers, []string{"10.0.0.1"}) || cfg.DNSServer != "" {
+		t.Errorf("legacy DNS server not migrated: DNSServers = %v, DNSServer = %q", cfg.DNSServers, cfg.DNSServer)
+	}
+	if cfg.GraceSeconds != DefaultGraceSeconds {
+		t.Errorf("GraceSeconds = %d, want the default %d", cfg.GraceSeconds, DefaultGraceSeconds)
+	}
+	if cfg.ProviderIntervalSeconds != DefaultProviderIntervalSeconds {
+		t.Errorf("ProviderIntervalSeconds = %d, want the default %d", cfg.ProviderIntervalSeconds, DefaultProviderIntervalSeconds)
+	}
+	if !reflect.DeepEqual(cfg.UnroutableCIDRs, DefaultUnroutableCIDRs) {
+		t.Errorf("UnroutableCIDRs = %v, want the defaults", cfg.UnroutableCIDRs)
+	}
+	if len(cfg.Rules) != 1 || len(cfg.Rules[0].Providers) != 0 {
+		t.Errorf("rules = %+v, want one rule that gained no providers", cfg.Rules)
+	}
+}
+
 // The config is not a secret, but world-readable it is the access policy in
 // the clear: which DDNS names are authorised, which internal resolvers are
 // used. 0600 costs nothing and applies to files created before this change
