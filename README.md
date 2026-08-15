@@ -27,6 +27,11 @@ up on its own.
   DHCP self-assigns a link-local address. Whitelisting those would authorise
   the wrong thing, so an FQDN resolving only into such ranges is reported as
   offline instead. The list is configurable.
+- **A provider list that cannot be fetched never revokes.** Published CDN
+  ranges are refetched on their own slow timer; if a fetch fails, or returns
+  anything anomalous, the ranges already authorised stay authorised and the
+  panel marks them stale. A whitelist source whose failure took the site down
+  would be worse than one that goes briefly out of date.
 
 ## Requirements
 
@@ -84,11 +89,29 @@ The plugin writes `config.json` next to its binary on first start:
 | `dns_servers` | Resolvers to query, in order. Empty means the system resolver. | system |
 | `dns_failure_grace_seconds` | How long to keep the last known IPs when a lookup fails ambiguously. `0` fails closed at once. | `3600` |
 | `unroutable_cidrs` | Ranges that must never be authorised. An explicit empty list disables the check. | RFC 5737, loopback, link-local, and other sentinels |
+| `provider_interval_seconds` | How often published provider ranges are refetched. Minimum 3600. | `43200` |
 | `rules[].rule_id` | Zoraxy access-rule ID. `default` is the global rule. | — |
 | `rules[].fqdns` | FQDNs whose resolved IPs sync into that rule. | — |
+| `rules[].providers` | Known provider ids whose ranges sync into that rule. Currently `cloudflare`. | none |
 
 Private RFC 1918 ranges are deliberately *not* in the unroutable defaults: an
 internal FQDN resolving into private space is a case worth syncing.
+
+## Provider ranges
+
+Besides FQDNs, a rule can sync the published IP ranges of known CDN
+providers — currently Cloudflare. Enable it per rule from the plugin's UI, or
+by adding the provider id to `rules[].providers`.
+
+The set of available providers is fixed in the plugin, not a URL the operator
+supplies: on a whitelist, whoever controls the source controls who gets in,
+so the list of sources is not something a config file should be able to
+redirect.
+
+Removing the plugin does not remove the entries it added. Zoraxy stops the
+plugin and revokes its API key, but the whitelist entries stay in the access
+rule — 22 CDN prefixes, if a provider was configured. Delete them from the
+Access Rules panel if you no longer want them.
 
 ## Build
 
