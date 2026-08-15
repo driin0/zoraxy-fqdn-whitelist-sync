@@ -30,12 +30,12 @@
   {
    "method": "POST",
    "endpoint": "/plugin/api/whitelist/ip/add",
-   "reason": "Add resolved FQDN IPs to the whitelist"
+   "reason": "Add resolved FQDN addresses and published CDN provider ranges to the whitelist"
   },
   {
    "method": "POST",
    "endpoint": "/plugin/api/whitelist/ip/remove",
-   "reason": "Remove stale FQDN IPs from the whitelist"
+   "reason": "Remove stale FQDN addresses and provider ranges from the whitelist"
   }
  ]
 }

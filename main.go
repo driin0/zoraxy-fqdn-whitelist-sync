@@ -39,8 +39,8 @@ func main() {
 		PermittedAPIEndpoints: []plugin.PermittedAPIEndpoint{
 			{Method: http.MethodGet, Endpoint: "/plugin/api/access/list", Reason: "List access rules for the UI dropdown and whitelist-mode warning"},
 			{Method: http.MethodGet, Endpoint: "/plugin/api/whitelist/list", Reason: "Read the current whitelist to reconcile"},
-			{Method: http.MethodPost, Endpoint: "/plugin/api/whitelist/ip/add", Reason: "Add resolved FQDN IPs to the whitelist"},
-			{Method: http.MethodPost, Endpoint: "/plugin/api/whitelist/ip/remove", Reason: "Remove stale FQDN IPs from the whitelist"},
+			{Method: http.MethodPost, Endpoint: "/plugin/api/whitelist/ip/add", Reason: "Add resolved FQDN addresses and published CDN provider ranges to the whitelist"},
+			{Method: http.MethodPost, Endpoint: "/plugin/api/whitelist/ip/remove", Reason: "Remove stale FQDN addresses and provider ranges from the whitelist"},
 		},
 	})
 	if err != nil {
