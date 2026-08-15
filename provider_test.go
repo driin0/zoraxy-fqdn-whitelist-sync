@@ -1,6 +1,11 @@
 package main
 
 import (
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 )
@@ -113,5 +118,145 @@ func TestValidateAgainstUnroutable(t *testing.T) {
 	}
 	if err := validateAgainstUnroutable([]string{"104.16.0.0/13", "192.0.2.128/25"}, set); err == nil {
 		t.Error("one overlapping prefix must fail the whole list")
+	}
+}
+
+// Both endpoints of a provider are fetched and unioned, and if either fails
+// the whole provider fails. Taking only the IPv4 half because IPv6 did not
+// answer would revoke authorisation for all inbound IPv6 traffic — a partial
+// failure presenting itself as a success.
+func TestFetchUnionsBothEndpoints(t *testing.T) {
+	v4 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "104.16.0.0/13\n172.64.0.0/13\n")
+	}))
+	defer v4.Close()
+	v6 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "2400:cb00::/32\n")
+	}))
+	defer v6.Close()
+
+	f := newTestFetcher(map[string]string{"a": v4.URL, "b": v6.URL})
+	got, err := f.Fetch(Provider{ID: "t", Name: "T", Endpoints: []string{"a", "b"}})
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("got %v, want 3 prefixes from both endpoints", got)
+	}
+}
+
+func TestFetchFailsWhenEitherEndpointFails(t *testing.T) {
+	ok := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "104.16.0.0/13\n")
+	}))
+	defer ok.Close()
+	bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "boom", http.StatusInternalServerError)
+	}))
+	defer bad.Close()
+
+	f := newTestFetcher(map[string]string{"a": ok.URL, "b": bad.URL})
+	if _, err := f.Fetch(Provider{ID: "t", Name: "T", Endpoints: []string{"a", "b"}}); err == nil {
+		t.Fatal("one failing endpoint must fail the whole provider")
+	}
+}
+
+func TestFetchRejectsNon200(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+	f := newTestFetcher(map[string]string{"a": srv.URL})
+	if _, err := f.Fetch(Provider{ID: "t", Endpoints: []string{"a"}}); err == nil {
+		t.Fatal("only 200 is acceptable")
+	}
+}
+
+// The body must be read through a limit, not trusted via Content-Length. A
+// hostile or broken endpoint streaming forever must not be able to exhaust
+// memory in the plugin process.
+func TestFetchStopsReadingAtTheBodyCeiling(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		line := "104.16.0.0/13\n"
+		for written := 0; written < providerBodyLimit*2; written += len(line) {
+			if _, err := io.WriteString(w, line); err != nil {
+				return
+			}
+		}
+	}))
+	defer srv.Close()
+	f := newTestFetcher(map[string]string{"a": srv.URL})
+	if _, err := f.Fetch(Provider{ID: "t", Endpoints: []string{"a"}}); err == nil {
+		t.Fatal("an oversized body must fail, not be truncated into a valid answer")
+	}
+}
+
+// A redirect is followed with the certificate of the *new* host, so following
+// one means accepting content from wherever the redirect points, TLS and all.
+func TestFetchDoesNotFollowRedirects(t *testing.T) {
+	elsewhere := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "104.16.0.0/13\n")
+	}))
+	defer elsewhere.Close()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, elsewhere.URL, http.StatusFound)
+	}))
+	defer srv.Close()
+	f := newTestFetcher(map[string]string{"a": srv.URL})
+	if _, err := f.Fetch(Provider{ID: "t", Endpoints: []string{"a"}}); err == nil {
+		t.Fatal("a redirect must not be followed")
+	}
+}
+
+func TestFetchAppliesTheCountCeiling(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		for i := 0; i <= providerMaxPrefixes; i++ {
+			fmt.Fprint(w, "104.16.0.0/13\n")
+		}
+	}))
+	defer srv.Close()
+	f := newTestFetcher(map[string]string{"a": srv.URL})
+	if _, err := f.Fetch(Provider{ID: "t", Endpoints: []string{"a"}}); err == nil {
+		t.Fatal("over the ceiling must fail")
+	}
+}
+
+func newTestFetcher(override map[string]string) *HTTPProviderFetcher {
+	f := NewHTTPProviderFetcher()
+	f.BaseOverride = override
+	return f
+}
+
+// R1: the fetch must use the system resolver, never the plugin's configured
+// dns_servers.
+//
+// That setting exists so the FQDNs being synced are answered authoritatively,
+// and its documented use is pointing at an internal split-horizon resolver.
+// Letting it also decide where the plugin downloads its authorisation lists
+// from would silently widen what the operator thinks they configured.
+//
+// A nil Transport means http.DefaultTransport, which resolves the way the rest
+// of the host does. Wiring the plugin's own resolver in would require a custom
+// Transport with a Dial or Resolver, which this catches.
+func TestFetcherUsesTheSystemResolver(t *testing.T) {
+	f := NewHTTPProviderFetcher()
+	if f.HTTP.Transport != nil {
+		t.Errorf("the fetch client has a custom Transport (%T); it must use the default one so name resolution is the host's", f.HTTP.Transport)
+	}
+}
+
+// The same requirement stated against the source, so a future change that
+// threads a resolver through provider.go is rejected on intent, not only on
+// the shape of the client. The panel tests in ui_test.go scan source the same
+// way.
+func TestProviderSourceDoesNotReferenceTheConfiguredResolvers(t *testing.T) {
+	src, err := os.ReadFile("provider.go")
+	if err != nil {
+		t.Fatalf("reading provider.go: %v", err)
+	}
+	for _, forbidden := range []string{"DNSServers", "newDNSServerResolver", "DNSServerResolver"} {
+		if strings.Contains(string(src), forbidden) {
+			t.Errorf("provider.go references %q — the provider fetch must not use the configured resolvers (R1)", forbidden)
+		}
 	}
 }

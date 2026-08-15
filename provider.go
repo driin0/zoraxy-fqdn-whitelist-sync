@@ -3,7 +3,9 @@ package main
 import (
 	"errors"
 	"fmt"
+	"io"
 	"net"
+	"net/http"
 	"strings"
 	"time"
 )
@@ -147,4 +149,81 @@ func validateAgainstUnroutable(prefixes []string, u *UnroutableSet) error {
 		}
 	}
 	return nil
+}
+
+// ProviderFetcher is the seam the reconciler is built against, so no test ever
+// makes a network request.
+type ProviderFetcher interface {
+	Fetch(p Provider) ([]string, error)
+}
+
+type HTTPProviderFetcher struct {
+	HTTP *http.Client
+	// BaseOverride replaces an endpoint URL with another. It exists only so
+	// tests can aim the real fetcher at an httptest server; nothing in
+	// production sets it.
+	BaseOverride map[string]string
+}
+
+// NewHTTPProviderFetcher builds the hardened client.
+//
+// The client deliberately uses the *system* resolver rather than the plugin's
+// configured dns_servers. That setting exists so the FQDNs being synced are
+// answered authoritatively, and its documented use is pointing at an internal
+// split-horizon resolver; letting it also govern where the plugin downloads
+// its authorisation lists from would silently widen what the operator thinks
+// they configured. TLS verification is the control that matters here, and it
+// is left at the default.
+func NewHTTPProviderFetcher() *HTTPProviderFetcher {
+	return &HTTPProviderFetcher{
+		HTTP: &http.Client{
+			Timeout: providerFetchTimeout,
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				return errors.New("redirects are not followed")
+			},
+		},
+	}
+}
+
+// Fetch reads every endpoint of a provider and returns their union. If any
+// endpoint fails, or any answer fails validation, the whole fetch fails and
+// the caller keeps whatever it already had.
+func (f *HTTPProviderFetcher) Fetch(p Provider) ([]string, error) {
+	all := []string{}
+	for _, endpoint := range p.Endpoints {
+		url := endpoint
+		if replacement, ok := f.BaseOverride[endpoint]; ok {
+			url = replacement
+		}
+		prefixes, err := f.fetchOne(url)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", endpoint, err)
+		}
+		all = append(all, prefixes...)
+	}
+	if err := checkPrefixCount(all); err != nil {
+		return nil, err
+	}
+	return all, nil
+}
+
+func (f *HTTPProviderFetcher) fetchOne(url string) ([]string, error) {
+	resp, err := f.HTTP.Get(url)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("http %d", resp.StatusCode)
+	}
+	// One byte past the ceiling, so a body that reaches the limit is detected
+	// as oversized instead of being silently truncated into a valid answer.
+	body, err := io.ReadAll(io.LimitReader(resp.Body, providerBodyLimit+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(body) > providerBodyLimit {
+		return nil, fmt.Errorf("response exceeds %d bytes", providerBodyLimit)
+	}
+	return parsePrefixList(body)
 }
