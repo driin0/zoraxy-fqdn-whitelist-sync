@@ -157,7 +157,7 @@ func runReconcileLoop(client ZoraxyClient, newResolver func(servers []string) Re
 		} else {
 			fmt.Printf("invalid unroutable_cidrs, keeping the previous list: %v\n", err)
 		}
-		status.Set(reconciler.All(cfg), time.Now())
+		status.Set(reconciler.All(cfg, false), time.Now())
 	}
 	runOnce() // immediate first run
 	ticker := time.NewTicker(time.Duration(store.Snapshot().IntervalSeconds) * time.Second)

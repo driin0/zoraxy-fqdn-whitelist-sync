@@ -27,6 +27,25 @@ type ReconcileResult struct {
 	Added   []string
 	Removed []string
 	Errors  []string
+	// Providers holds one entry per provider configured on this rule, healthy
+	// or not. Built fresh each cycle — see the doc comment on ProviderStatus.
+	Providers []ProviderStatus
+}
+
+// ProviderStatus is how one provider's outcome is reported to the UI. Like
+// every other field on ReconcileResult it is built fresh each cycle and never
+// mutated after publication — see StatusStore.Snapshot.
+type ProviderStatus struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	// Prefixes are the ranges currently authorised for this provider, whether
+	// they came from a fresh fetch, the cache, or the entries already owned.
+	Prefixes []string `json:"prefixes"`
+	// LastSuccess is RFC3339, empty if a fetch has never succeeded this run.
+	LastSuccess string `json:"last_success"`
+	// StaleFor is a human-readable age, set only while Error is set.
+	StaleFor string `json:"stale_for"`
+	Error    string `json:"error"`
 }
 
 // toCIDR turns a single address into its single-host CIDR form (/32 for IPv4,
@@ -72,6 +91,28 @@ func ownedAddressIsUnroutable(u *UnroutableSet, canonical string) bool {
 	return u.Contains(host.String())
 }
 
+// keepableOwned returns the owned entries that may still be authorised.
+//
+// Grace protects against a failure that leaves the answer unknown; it must
+// never protect an address that has to be refused whatever the reason it is
+// there — an operator adding a range to unroutable_cidrs while a source is
+// already failing, or a sentinel surviving an upgrade. Both the FQDN grace
+// path and the provider fallback path go through here, which is the one piece
+// the two passes genuinely share.
+func keepableOwned(u *UnroutableSet, owned []string) []string {
+	if len(owned) == 0 {
+		return nil
+	}
+	kept := make([]string, 0, len(owned))
+	for _, entry := range owned {
+		if ownedAddressIsUnroutable(u, entry) {
+			continue
+		}
+		kept = append(kept, entry)
+	}
+	return kept
+}
+
 // Reconciler owns the state that must survive between cycles: how long each
 // FQDN has been failing to resolve. The clock is injectable so grace-window
 // tests do not sleep.
@@ -82,9 +123,28 @@ type Reconciler struct {
 	// Unroutable filters out addresses that must never be authorised. A nil
 	// set blocks nothing.
 	Unroutable *UnroutableSet
+	// Fetcher retrieves provider range lists. Injectable so no test reaches
+	// the network.
+	Fetcher ProviderFetcher
+	// ProviderPeriod is how long a successful fetch is good for.
+	ProviderPeriod time.Duration
 
-	now          func() time.Time
-	failingSince map[string]time.Time
+	now            func() time.Time
+	failingSince   map[string]time.Time
+	providers      map[string]*providerState
+	lastForced     time.Time
+	forceThisCycle bool
+}
+
+// providerState is the in-memory schedule and cache for one provider, keyed by
+// provider id and shared across rules. It is deliberately not persisted: on a
+// restart it is empty, which forces a fetch on the first cycle, and the plugin
+// keeps its "nothing to flush on the way out" property.
+type providerState struct {
+	prefixes    []string
+	lastSuccess time.Time
+	nextAttempt time.Time
+	lastErr     string
 }
 
 func NewReconciler(client ZoraxyClient, resolver Resolver, grace time.Duration) *Reconciler {
@@ -94,6 +154,7 @@ func NewReconciler(client ZoraxyClient, resolver Resolver, grace time.Duration) 
 		Grace:        grace,
 		now:          time.Now,
 		failingSince: map[string]time.Time{},
+		providers:    map[string]*providerState{},
 	}
 }
 
@@ -102,10 +163,11 @@ func NewReconciler(client ZoraxyClient, resolver Resolver, grace time.Duration) 
 // treated as plugin-owned and are eligible for removal.
 func (r *Reconciler) Rule(rule RuleConfig) ReconcileResult {
 	result := ReconcileResult{
-		RuleID:   rule.RuleID,
-		Resolved: map[string][]string{},
-		Grace:    map[string]string{},
-		Offline:  map[string][]string{},
+		RuleID:    rule.RuleID,
+		Resolved:  map[string][]string{},
+		Grace:     map[string]string{},
+		Offline:   map[string][]string{},
+		Providers: []ProviderStatus{},
 	}
 
 	// 1. Read the current whitelist first: the grace path answers "what were
@@ -177,17 +239,7 @@ func (r *Reconciler) Rule(rule RuleConfig) ReconcileResult {
 		// address that must never be authorised regardless of why it is
 		// there (an operator adding a range to unroutable_cidrs while the
 		// FQDN is already failing, or a sentinel entry surviving an upgrade).
-		kept := ownedBy[fqdn]
-		if len(kept) > 0 {
-			filtered := make([]string, 0, len(kept))
-			for _, ip := range kept {
-				if ownedAddressIsUnroutable(r.Unroutable, ip) {
-					continue
-				}
-				filtered = append(filtered, ip)
-			}
-			kept = filtered
-		}
+		kept := keepableOwned(r.Unroutable, ownedBy[fqdn])
 		// ownedBy is keyed by the single owner named in an entry's comment, so
 		// an FQDN can legitimately hold no entries — including when another
 		// FQDN resolved to the same address first and was recorded as its
@@ -210,6 +262,74 @@ func (r *Reconciler) Rule(rule RuleConfig) ReconcileResult {
 			continue
 		}
 		result.Errors = append(result.Errors, fmt.Sprintf("resolve %s: %v", fqdn, err))
+	}
+
+	// 2b. Provider pass. Deliberately a second explicit pass rather than a
+	// shared Source interface: an FQDN has three outcomes (resolved, an
+	// authoritative NXDOMAIN, an ambiguous failure) and a provider has two,
+	// the unroutable test is membership for an address and overlap for a
+	// prefix, and the failure policy is a grace window against
+	// keep-indefinitely. Both passes feed the same `desired` map, so unifying
+	// them later — when a third *kind* of source appears, not a third provider
+	// — stays cheap.
+	for _, id := range rule.Providers {
+		st := r.providerStateFor(id)
+		provider, known := LookupProvider(id)
+		switch {
+		case !known:
+			// Reachable only from a hand-edited config or a downgraded binary.
+			// Treated exactly as a failed fetch with no new information: keep
+			// what is owned, say so. Revoking would take a site down over a
+			// downgrade.
+			st.lastErr = fmt.Sprintf("unknown provider %q", id)
+		case r.shouldAttempt(st):
+			prefixes, err := r.Fetcher.Fetch(provider)
+			if err == nil {
+				err = validateAgainstUnroutable(prefixes, r.Unroutable)
+			}
+			if err != nil {
+				st.lastErr = err.Error()
+				st.nextAttempt = r.now().Add(providerRetryInterval)
+			} else {
+				st.prefixes = prefixes
+				st.lastSuccess = r.now()
+				st.lastErr = ""
+				st.nextAttempt = r.now().Add(r.ProviderPeriod)
+			}
+		}
+
+		// What is actually authorised: the cache when there is one, otherwise
+		// the entries this provider already owns in the whitelist. That
+		// fallback is why no cache has to survive a restart.
+		authorised := st.prefixes
+		if len(authorised) == 0 {
+			authorised = keepableOwned(r.Unroutable, ownedBy[id])
+		}
+		for _, prefix := range authorised {
+			if _, exists := desired[prefix]; !exists {
+				desired[prefix] = id
+			}
+		}
+
+		status := ProviderStatus{
+			ID:       id,
+			Name:     provider.Name,
+			Prefixes: append([]string(nil), authorised...),
+			Error:    st.lastErr,
+		}
+		if status.Name == "" {
+			status.Name = id
+		}
+		if !st.lastSuccess.IsZero() {
+			status.LastSuccess = st.lastSuccess.Format(time.RFC3339)
+		}
+		if st.lastErr != "" && !st.lastSuccess.IsZero() {
+			status.StaleFor = r.now().Sub(st.lastSuccess).Round(time.Minute).String()
+		}
+		if st.lastErr != "" {
+			result.Errors = append(result.Errors, fmt.Sprintf("provider %s: %s", id, st.lastErr))
+		}
+		result.Providers = append(result.Providers, status)
 	}
 
 	// 3a. Add desired IPs not already authorised. An address already covered
@@ -265,15 +385,45 @@ func (r *Reconciler) graceLeft(fqdn string) (time.Duration, bool) {
 	return left, true
 }
 
+func (r *Reconciler) providerStateFor(id string) *providerState {
+	if st, ok := r.providers[id]; ok {
+		return st
+	}
+	st := &providerState{}
+	r.providers[id] = st
+	return st
+}
+
+// shouldAttempt answers "is it time to talk to this provider?". A zero
+// nextAttempt means it has never been fetched, so the first cycle always does.
+func (r *Reconciler) shouldAttempt(st *providerState) bool {
+	if r.forceThisCycle {
+		return true
+	}
+	return !r.now().Before(st.nextAttempt)
+}
+
 // All reconciles every rule in the config independently; an error on one rule
-// does not stop the others.
-func (r *Reconciler) All(cfg *Config) []ReconcileResult {
+// does not stop the others. force comes from the UI's Refresh button and makes
+// this cycle refetch provider lists regardless of their schedule — honoured at
+// most once per providerForceFloor, evaluated here rather than per provider so
+// several providers in one cycle share the one allowance.
+func (r *Reconciler) All(cfg *Config, force bool) []ReconcileResult {
+	r.forceThisCycle = force && !r.now().Before(r.lastForced.Add(providerForceFloor))
+	if r.forceThisCycle {
+		r.lastForced = r.now()
+	}
+
 	results := []ReconcileResult{}
 	configured := map[string]bool{}
+	configuredProviders := map[string]bool{}
 	for _, rule := range cfg.Rules {
 		results = append(results, r.Rule(rule))
 		for _, fqdn := range rule.FQDNs {
 			configured[fqdn] = true
+		}
+		for _, id := range rule.Providers {
+			configuredProviders[id] = true
 		}
 	}
 	// Forget the failure history of FQDNs that are no longer configured.
@@ -283,6 +433,14 @@ func (r *Reconciler) All(cfg *Config) []ReconcileResult {
 	for fqdn := range r.failingSince {
 		if !configured[fqdn] {
 			delete(r.failingSince, fqdn)
+		}
+	}
+	// Same reasoning for providers: a stale nextAttempt would otherwise make a
+	// re-added provider look recently fetched when it has not been fetched at
+	// all this configuration.
+	for id := range r.providers {
+		if !configuredProviders[id] {
+			delete(r.providers, id)
 		}
 	}
 	return results

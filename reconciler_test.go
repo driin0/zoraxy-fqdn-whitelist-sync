@@ -269,7 +269,7 @@ func TestReconcileAllHandlesMultipleRulesIndependently(t *testing.T) {
 			{RuleID: "admin", FQDNs: []string{"c.example.com"}},
 		},
 	}
-	results := NewReconciler(client, resolver, 0).All(cfg)
+	results := NewReconciler(client, resolver, 0).All(cfg, false)
 
 	if len(results) != 2 {
 		t.Fatalf("results = %d, want 2", len(results))
@@ -533,15 +533,15 @@ func TestRemovingFQDNFromConfigForgetsItsFailureWindow(t *testing.T) {
 	with := &Config{Rules: []RuleConfig{{RuleID: "default", FQDNs: []string{"a.example.com"}}}}
 	without := &Config{Rules: []RuleConfig{{RuleID: "default", FQDNs: []string{}}}}
 
-	r.All(with)    // first failure opens the window at T0
-	r.All(without) // operator removes the FQDN; its entry goes with it
+	r.All(with, false)    // first failure opens the window at T0
+	r.All(without, false) // operator removes the FQDN; its entry goes with it
 	clock = clock.Add(2 * time.Hour)
 	// The operator re-adds the FQDN and its last known IP is back in the
 	// whitelist (restored by hand, or never dropped on another rule).
 	client.entries["default"] = []WhitelistEntry{
 		{EntryType: 1, IP: "203.0.113.7/32", Comment: "fqdn-sync:a.example.com"},
 	}
-	results := r.All(with) // re-added, DNS still down: a fresh window is due
+	results := r.All(with, false) // re-added, DNS still down: a fresh window is due
 
 	res := results[0]
 	if len(res.Removed) != 0 {
@@ -776,5 +776,301 @@ func TestGraceRevokesOwnedIPv6AddressOnBlocklist(t *testing.T) {
 	msg := errorMentioning(res.Errors, "a.example.com")
 	if strings.Contains(msg, "keeping last known IPs") {
 		t.Errorf("error = %q, must not claim to keep an address that was revoked", msg)
+	}
+}
+
+type fakeFetcher struct {
+	prefixes []string
+	err      error
+	calls    int
+}
+
+func (f *fakeFetcher) Fetch(p Provider) ([]string, error) {
+	f.calls++
+	if f.err != nil {
+		return nil, f.err
+	}
+	return append([]string(nil), f.prefixes...), nil
+}
+
+func newProviderReconciler(client ZoraxyClient, fetcher ProviderFetcher) *Reconciler {
+	r := NewReconciler(client, &fakeResolver{m: map[string][]string{}}, 0)
+	r.Fetcher = fetcher
+	r.ProviderPeriod = 12 * time.Hour
+	r.Unroutable, _ = NewUnroutableSet(DefaultUnroutableCIDRs)
+	return r
+}
+
+func TestProviderPassAddsFetchedPrefixes(t *testing.T) {
+	client := newFakeClient()
+	fetcher := &fakeFetcher{prefixes: []string{"104.16.0.0/13", "2400:cb00::/32"}}
+	r := newProviderReconciler(client, fetcher)
+
+	res := r.Rule(RuleConfig{RuleID: "default", Providers: []string{"cloudflare"}})
+
+	if len(res.Added) != 2 {
+		t.Fatalf("added %v, want both prefixes", res.Added)
+	}
+	entries, _ := client.ListWhitelistIP("default")
+	for _, e := range entries {
+		if e.Comment != MarkerPrefix+"cloudflare" {
+			t.Errorf("entry %q is tagged %q, want %q", e.IP, e.Comment, MarkerPrefix+"cloudflare")
+		}
+	}
+	if len(res.Providers) != 1 || res.Providers[0].Error != "" {
+		t.Errorf("provider status = %+v, want one healthy entry", res.Providers)
+	}
+}
+
+// Not time to refetch: the cache answers and the network is not touched. This
+// asserts on the call counter rather than inferring it from timing.
+func TestProviderPassUsesTheCacheBeforeTheIntervalElapses(t *testing.T) {
+	client := newFakeClient()
+	fetcher := &fakeFetcher{prefixes: []string{"104.16.0.0/13"}}
+	r := newProviderReconciler(client, fetcher)
+	rule := RuleConfig{RuleID: "default", Providers: []string{"cloudflare"}}
+
+	r.Rule(rule)
+	if fetcher.calls != 1 {
+		t.Fatalf("first cycle made %d calls, want 1", fetcher.calls)
+	}
+	r.Rule(rule)
+	r.Rule(rule)
+	if fetcher.calls != 1 {
+		t.Errorf("made %d calls, want 1 — the interval had not elapsed", fetcher.calls)
+	}
+}
+
+// A failure must never revoke. The prefixes already fetched stay authorised
+// and the status says stale.
+func TestProviderFailureKeepsTheCachedPrefixes(t *testing.T) {
+	client := newFakeClient()
+	fetcher := &fakeFetcher{prefixes: []string{"104.16.0.0/13"}}
+	r := newProviderReconciler(client, fetcher)
+	rule := RuleConfig{RuleID: "default", Providers: []string{"cloudflare"}}
+
+	r.Rule(rule)
+	fetcher.err = fmt.Errorf("connection refused")
+	r.now = func() time.Time { return time.Now().Add(24 * time.Hour) } // force a refetch
+	res := r.Rule(rule)
+
+	if len(res.Removed) != 0 {
+		t.Errorf("removed %v — a failed fetch must never revoke", res.Removed)
+	}
+	entries, _ := client.ListWhitelistIP("default")
+	if len(entries) != 1 {
+		t.Errorf("whitelist holds %d entries, want the cached prefix kept", len(entries))
+	}
+	if len(res.Providers) != 1 || res.Providers[0].Error == "" || len(res.Providers[0].Prefixes) == 0 {
+		t.Errorf("status = %+v, want stale: an error reported and prefixes still held", res.Providers)
+	}
+}
+
+// The failure that happens before anything was ever fetched, with entries
+// already in the whitelist from a previous run: those entries are the
+// fallback, which is why the plugin needs no persistent cache of its own.
+func TestProviderFailureWithEmptyCacheKeepsOwnedEntries(t *testing.T) {
+	client := newFakeClient()
+	client.entries["default"] = []WhitelistEntry{
+		{EntryType: 1, IP: "104.16.0.0/13", Comment: MarkerPrefix + "cloudflare"},
+	}
+	fetcher := &fakeFetcher{err: fmt.Errorf("connection refused")}
+	r := newProviderReconciler(client, fetcher)
+
+	res := r.Rule(RuleConfig{RuleID: "default", Providers: []string{"cloudflare"}})
+
+	if len(res.Removed) != 0 {
+		t.Errorf("removed %v, want nothing removed", res.Removed)
+	}
+	if len(res.Providers) != 1 || len(res.Providers[0].Prefixes) != 1 {
+		t.Errorf("status = %+v, want the owned entry reported as still held", res.Providers)
+	}
+}
+
+// The one state where a provider authorises nothing: nothing cached, nothing
+// owned. It must be reported as an error, not as an empty success.
+func TestProviderFailureWithNothingToFallBackOnReportsAnError(t *testing.T) {
+	client := newFakeClient()
+	fetcher := &fakeFetcher{err: fmt.Errorf("connection refused")}
+	r := newProviderReconciler(client, fetcher)
+
+	res := r.Rule(RuleConfig{RuleID: "default", Providers: []string{"cloudflare"}})
+
+	if len(res.Added) != 0 {
+		t.Errorf("added %v, want nothing", res.Added)
+	}
+	if len(res.Providers) != 1 || res.Providers[0].Error == "" || len(res.Providers[0].Prefixes) != 0 {
+		t.Errorf("status = %+v, want an error with no prefixes", res.Providers)
+	}
+}
+
+// A failing provider must be retried sooner than the normal interval, or a
+// transient failure leaves it stale for half a day.
+func TestProviderRetriesSoonerAfterAFailure(t *testing.T) {
+	client := newFakeClient()
+	fetcher := &fakeFetcher{err: fmt.Errorf("connection refused")}
+	r := newProviderReconciler(client, fetcher)
+	rule := RuleConfig{RuleID: "default", Providers: []string{"cloudflare"}}
+
+	base := time.Now()
+	r.now = func() time.Time { return base }
+	r.Rule(rule)
+	if fetcher.calls != 1 {
+		t.Fatalf("calls = %d, want 1", fetcher.calls)
+	}
+	r.now = func() time.Time { return base.Add(providerRetryInterval - time.Second) }
+	r.Rule(rule)
+	if fetcher.calls != 1 {
+		t.Errorf("calls = %d, want no retry before the retry interval", fetcher.calls)
+	}
+	r.now = func() time.Time { return base.Add(providerRetryInterval + time.Second) }
+	r.Rule(rule)
+	if fetcher.calls != 2 {
+		t.Errorf("calls = %d, want a retry once the retry interval passed", fetcher.calls)
+	}
+}
+
+// A prefix that overlaps the never-authorise list fails the whole fetch. It
+// is not dropped with the rest applied: a list that has already shown an
+// anomaly is not a list to take the rest of.
+func TestProviderFetchOverlappingAnUnroutableRangeIsRejectedWhole(t *testing.T) {
+	client := newFakeClient()
+	fetcher := &fakeFetcher{prefixes: []string{"104.16.0.0/13", "192.0.2.0/25"}}
+	r := newProviderReconciler(client, fetcher)
+
+	res := r.Rule(RuleConfig{RuleID: "default", Providers: []string{"cloudflare"}})
+
+	if len(res.Added) != 0 {
+		t.Errorf("added %v, want the whole answer refused", res.Added)
+	}
+	if len(res.Providers) != 1 || res.Providers[0].Error == "" {
+		t.Errorf("status = %+v, want the fetch reported as failed", res.Providers)
+	}
+}
+
+func TestUnknownProviderBehavesLikeAFailedFetch(t *testing.T) {
+	client := newFakeClient()
+	client.entries["default"] = []WhitelistEntry{
+		{EntryType: 1, IP: "104.16.0.0/13", Comment: MarkerPrefix + "mystery"},
+	}
+	fetcher := &fakeFetcher{prefixes: []string{"1.2.3.0/24"}}
+	r := newProviderReconciler(client, fetcher)
+
+	res := r.Rule(RuleConfig{RuleID: "default", Providers: []string{"mystery"}})
+
+	if fetcher.calls != 0 {
+		t.Errorf("an unknown provider must not be fetched, calls = %d", fetcher.calls)
+	}
+	if len(res.Removed) != 0 {
+		t.Errorf("removed %v — an unknown provider must not revoke anything", res.Removed)
+	}
+	if len(res.Providers) != 1 || res.Providers[0].Error == "" {
+		t.Errorf("status = %+v, want an error", res.Providers)
+	}
+}
+
+// The one legitimate revocation: the operator took the provider off the rule.
+func TestRemovingAProviderFromTheRuleRemovesItsEntries(t *testing.T) {
+	client := newFakeClient()
+	client.entries["default"] = []WhitelistEntry{
+		{EntryType: 1, IP: "104.16.0.0/13", Comment: MarkerPrefix + "cloudflare"},
+	}
+	r := newProviderReconciler(client, &fakeFetcher{})
+
+	res := r.Rule(RuleConfig{RuleID: "default"})
+
+	if len(res.Removed) != 1 || res.Removed[0] != "104.16.0.0/13" {
+		t.Errorf("removed %v, want the deconfigured provider's prefix", res.Removed)
+	}
+}
+
+// FQDNs and providers share a rule without disturbing each other, and neither
+// touches an entry an administrator added by hand.
+func TestFQDNsAndProvidersCoexistAndAdminEntriesSurvive(t *testing.T) {
+	client := newFakeClient()
+	client.entries["default"] = []WhitelistEntry{
+		{EntryType: 1, IP: "10.0.0.0/8", Comment: "added by hand"},
+	}
+	r := newProviderReconciler(client, &fakeFetcher{prefixes: []string{"104.16.0.0/13"}})
+	// 203.0.113.0/24 is in the default never-authorise list; use a routable one.
+	r.Resolver = &fakeResolver{m: map[string][]string{"a.example.net": {"198.18.0.9"}}}
+
+	res := r.Rule(RuleConfig{RuleID: "default", FQDNs: []string{"a.example.net"}, Providers: []string{"cloudflare"}})
+
+	if len(res.Added) != 2 {
+		t.Fatalf("added %v, want one FQDN address and one provider prefix", res.Added)
+	}
+	entries, _ := client.ListWhitelistIP("default")
+	found := false
+	for _, e := range entries {
+		if e.IP == "10.0.0.0/8" && e.Comment == "added by hand" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("the administrator's entry was modified or removed")
+	}
+}
+
+// State is keyed by provider, not by rule, so the same provider on two rules
+// is fetched once.
+func TestTheSameProviderOnTwoRulesFetchesOnce(t *testing.T) {
+	client := newFakeClient()
+	fetcher := &fakeFetcher{prefixes: []string{"104.16.0.0/13"}}
+	r := newProviderReconciler(client, fetcher)
+
+	cfg := &Config{Rules: []RuleConfig{
+		{RuleID: "default", Providers: []string{"cloudflare"}},
+		{RuleID: "other", Providers: []string{"cloudflare"}},
+	}}
+	r.All(cfg, false)
+
+	if fetcher.calls != 1 {
+		t.Errorf("calls = %d, want 1 for the same provider on two rules", fetcher.calls)
+	}
+}
+
+// A forced refresh overrides the schedule, but not more often than the floor.
+func TestForcedRefreshOverridesTheScheduleOnceAMinute(t *testing.T) {
+	client := newFakeClient()
+	fetcher := &fakeFetcher{prefixes: []string{"104.16.0.0/13"}}
+	r := newProviderReconciler(client, fetcher)
+	cfg := &Config{Rules: []RuleConfig{{RuleID: "default", Providers: []string{"cloudflare"}}}}
+
+	base := time.Now()
+	r.now = func() time.Time { return base }
+	r.All(cfg, false)
+	if fetcher.calls != 1 {
+		t.Fatalf("calls = %d, want the first cycle to fetch", fetcher.calls)
+	}
+	r.All(cfg, true)
+	if fetcher.calls != 2 {
+		t.Errorf("calls = %d, want a forced refresh to refetch", fetcher.calls)
+	}
+	r.All(cfg, true)
+	if fetcher.calls != 2 {
+		t.Errorf("calls = %d, want the force floor to swallow the second force", fetcher.calls)
+	}
+	r.now = func() time.Time { return base.Add(providerForceFloor + time.Second) }
+	r.All(cfg, true)
+	if fetcher.calls != 3 {
+		t.Errorf("calls = %d, want a force honoured again past the floor", fetcher.calls)
+	}
+}
+
+// Mirrors the failingSince cleanup: state for a provider nobody configures any
+// more must not linger and later be mistaken for a fresh fetch.
+func TestProviderStateIsForgottenWhenDeconfigured(t *testing.T) {
+	client := newFakeClient()
+	fetcher := &fakeFetcher{prefixes: []string{"104.16.0.0/13"}}
+	r := newProviderReconciler(client, fetcher)
+
+	withProvider := &Config{Rules: []RuleConfig{{RuleID: "default", Providers: []string{"cloudflare"}}}}
+	r.All(withProvider, false)
+	r.All(&Config{Rules: []RuleConfig{{RuleID: "default"}}}, false)
+	r.All(withProvider, false)
+
+	if fetcher.calls != 2 {
+		t.Errorf("calls = %d, want the re-added provider to fetch afresh", fetcher.calls)
 	}
 }
