@@ -149,31 +149,51 @@ function renderStatusMsg() {
 const STALE_ALARM_MS = 7 * 24 * 60 * 60 * 1000;
 
 function renderProviderRow($t, id, status) {
-    const st = status || {};
-    const prefixes = st.prefixes || [];
+    const prefixes = (status && status.prefixes) || [];
     const listText = prefixes.length
         ? '<div class="ipList">' + prefixes.map(esc).join("<br>") + "</div>"
         : '<span class="muted">—</span>';
 
     let statusCls, statusTxt, note = "";
-    if (!st.error) {
+    if (!status) {
+        // handleProviderAdd only triggers a reconcile, it does not wait for
+        // one, so the render right after clicking Add lands before any cycle
+        // has looked at this provider — there is no ProviderStatus for it
+        // yet. Grey and "pending", the FQDN table's own never-run state:
+        // falling into the ok branch below would paint ranges as authorised
+        // before anything has actually been fetched.
+        statusCls = "status-pending";
+        statusTxt = "pending";
+    } else if (!status.error) {
         statusCls = "status-ok";
         statusTxt = '<i class="check circle icon"></i> ok';
     } else if (prefixes.length > 0) {
-        const age = st.last_success ? Date.now() - new Date(st.last_success).getTime() : 0;
+        // last_success empty is not "just refreshed" (age zero) — the
+        // provider cache is not persisted across restarts (reconciler.go),
+        // so after a restart whose first fetch fails these prefixes are
+        // carried forward from what the whitelist already owned, never
+        // confirmed by this run at all. That is the most stale a provider
+        // can be, so it reads as maximally aged (red) and says so, rather
+        // than showing the same orange and a blank age as a fetch that
+        // merely failed five minutes ago.
+        const confirmed = !!status.last_success;
+        const age = confirmed ? Date.now() - new Date(status.last_success).getTime() : Infinity;
         statusCls = age > STALE_ALARM_MS ? "status-stale-long" : "status-stale";
-        statusTxt = '<i class="hourglass half icon"></i> stale' + (st.stale_for ? " — " + esc(st.stale_for) : "");
-        note = '<div class="graceNote">Cannot refresh the list (' + esc(st.error) +
+        const ageText = confirmed
+            ? (status.stale_for ? " — " + esc(status.stale_for) : "")
+            : " — not confirmed since the plugin started";
+        statusTxt = '<i class="hourglass half icon"></i> stale' + ageText;
+        note = '<div class="graceNote">Cannot refresh the list (' + esc(status.error) +
                ') — the ranges below stay authorised.</div>';
     } else {
         statusCls = "status-error";
         statusTxt = '<i class="times circle icon"></i> failed';
-        note = '<div class="graceNote">' + esc(st.error) + ' — nothing is authorised for this provider.</div>';
+        note = '<div class="graceNote">' + esc(status.error) + ' — nothing is authorised for this provider.</div>';
     }
 
     $t.append(`
         <tr>
-            <td><i class="cloud icon"></i> ${esc(st.name || id)}${note}</td>
+            <td><i class="cloud icon"></i> ${esc((status && status.name) || id)}${note}</td>
             <td>${listText}</td>
             <td class="${statusCls}">${statusTxt}</td>
             <td><button class="ui icon basic mini red button removeProviderBtn" data-provider="${esc(id)}"><i class="trash alternate icon"></i></button></td>
