@@ -1277,7 +1277,7 @@ func TestAFetchedPrefixBroaderThanTheFloorIsTreatedAsAFailedFetch(t *testing.T) 
 	}
 }
 
-// The ceiling is a bound on a cost Zoraxy pays on every proxied request, so it
+// The ceiling is a bound on a cost Zoraxy pays on every request that reaches the whitelist scan, so it
 // belongs to the reconciler that writes the entries, not only to the fetcher
 // that happened to read them.
 func TestMoreFetchedPrefixesThanTheCeilingIsTreatedAsAFailedFetch(t *testing.T) {

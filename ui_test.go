@@ -40,7 +40,7 @@ func TestAPIErrorDetectsAnErrorBody(t *testing.T) {
 		{"a state object", `{"interval_seconds":30,"rules":[]}`, ""},
 		{"an empty error string reports nothing", `{"error":""}`, ""},
 
-		// An expired session is answered by Zoraxy with 200, text/html and the
+		// An expired session is answered on the wire with a 307 to /login.html, which the XHR follows transparently, so the callback sees 200, text/html and the
 		// login page, so jQuery hands the callback a string. Reading only the
 		// status, or only an `error` field, reports "Interval saved" for a
 		// write that never happened.

@@ -84,8 +84,11 @@ const (
 	providerBodyLimit = 1 << 20
 	// Cloudflare publishes 22. This is a tripwire that turns an upstream change
 	// into a readable error, and it bounds a cost paid inside Zoraxy: its
-	// IsIPWhitelisted iterates every entry and re-parses each CIDR on *every
-	// proxied request*. Every entry is latency on every request, so this is a
+	// IsIPWhitelisted iterates every entry and re-parses each CIDR every time it
+	// is reached. That is not quite every proxied request — IsWhitelisted
+	// short-circuits first on whitelist mode being off, on an empty client
+	// address, and on the country-code whitelist matching — but under the
+	// configuration this plugin exists for it is the normal path. So this is a
 	// bound to respect, not a budget to spend.
 	//
 	// Note what it does not bound: checkPrefixCount runs on the union of one
@@ -96,9 +99,10 @@ const (
 	// request, across the hardware Zoraxy actually ships builds for. The
 	// spread is the finding — 23x between the fastest and slowest of these at
 	// today's 22 entries, so a number from one machine says nothing about
-	// another:
+	// another. (The 32-bit column was built GOARM=7; Zoraxy ships linux/arm at
+	// GOARM=6, so that row is indicative rather than the shipped binary.)
 	//
-	//   entries   EPYC vCPU    Pi 5     Pi 3 B+    Pi 2 B (armv7)
+	//   entries   EPYC vCPU    Pi 5     Pi 3 B+    Pi 2 B (32-bit)
 	//        22      9.6 µs   17.1 µs    163 µs      224 µs   <- real CF list
 	//       512      200 µs    410 µs   3.70 ms     5.14 ms
 	//    16,762     8.82 ms   15.1 ms    152 ms      178 ms
@@ -108,18 +112,24 @@ const (
 	// It stays at 512 all the same: it is a tripwire that today's 22 entries
 	// come nowhere near, so tuning it changes nothing anyone is paying.
 	//
-	// The allocations are the part no short list escapes: they are per request,
-	// so they scale with traffic rather than with list length, and they fall on
-	// requests matching *nothing* — scanners and bots — since only a hit exits
-	// early. Since this constant bounds one provider while the cost is paid on
-	// the rule's total, a second provider in the registry owes a per-rule bound.
+	// The allocations are six per entry per request, so the churn is traffic
+	// multiplied by list length — which is the other reason to keep the list
+	// short, and why an earlier version of this comment had it backwards by
+	// saying they scale with traffic rather than with length. They also fall
+	// hardest on requests matching *nothing* — scanners and bots — since only a
+	// hit exits early. And since this constant bounds one provider while the
+	// cost is paid on the rule's total, a second provider owes a per-rule bound.
 	//
-	// And one figure keeps the rest in proportion: measured on a *real request*,
-	// through a Zoraxy patched to remove this cost entirely, the whole saving is
-	// 1.12x at today's 22 entries and 1.89x at 512. Roughly 111 µs of a rejected
-	// request is TLS, parsing and routing, which none of this touches. The
-	// numbers above are the access check in isolation and mean much less than
-	// they look like on their own.
+	// And one figure keeps the rest in proportion. Measured on *real requests*,
+	// through a Zoraxy patched to remove this cost entirely: at 512 entries a
+	// rejected request went from 212 µs to 112 µs, a saving of 100 µs against a
+	// combined run-to-run uncertainty of 44 — so **1.89x**, and real. At 22
+	// entries the difference was 13 µs against an uncertainty of 26: **below the
+	// noise floor of that rig, so no ratio can be quoted for it at all.**
+	//
+	// Roughly 111 µs of a rejected request is TLS, parsing and routing, which
+	// none of this touches. The numbers above are the access check in isolation
+	// and mean much less than they look like on their own.
 	providerMaxPrefixes = 512
 	// After a failure, retry sooner than the normal interval — a transient
 	// failure must not leave a provider stale for half a day — but not on every

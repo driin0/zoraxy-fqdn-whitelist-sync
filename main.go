@@ -96,9 +96,12 @@ func main() {
 		fmt.Println("FQDN Whitelist Sync terminating")
 	}, nil)
 
-	// That alone is not enough: Zoraxy sends SIGTERM immediately after the GET
-	// returns, without waiting (see StopPlugin in mod/plugins/lifecycle.go), so
-	// the signal always wins the race against that 100ms timer. Go's default
+	// That alone is not enough: on POSIX, Zoraxy sends SIGTERM immediately after
+	// the GET returns, without waiting (see StopPlugin in
+	// mod/plugins/lifecycle.go), so the signal wins the race against that 100ms
+	// timer. On Windows there is no SIGTERM at all — StopPlugin sleeps 300ms and
+	// calls Process.Kill(), so the SDK's timer gets there first and this handler
+	// never runs. Zoraxy ships windows/amd64, so both paths are real. Go's default
 	// for an unhandled SIGTERM is to die by signal, which Zoraxy reports as
 	// "encounted a fatal error ... Disabling plugin" and then, five seconds
 	// later, "failed to stop gracefully, killing it".
