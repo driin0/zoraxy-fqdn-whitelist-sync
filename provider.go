@@ -38,8 +38,8 @@ type Provider struct {
 //
 // Adding a second is not the row it looks like, which is worth saying here
 // because here is where someone would try. Every other published list was
-// measured on 2026-08-16 (notes/2026-08-16-provider-registry-survey.md) and
-// Cloudflare turned out to be the only one publishing one CIDR per line:
+// fetched and counted on 2026-08-16, and Cloudflare turned out to be the only
+// one publishing one CIDR per line:
 // Fastly, Imperva, Google, AWS and Azure are all JSON, each with its own key
 // names. parsePrefixList therefore covers exactly one provider, and a second
 // needs a decoder chosen per format.
@@ -114,18 +114,12 @@ const (
 	// early. Since this constant bounds one provider while the cost is paid on
 	// the rule's total, a second provider in the registry owes a per-rule bound.
 	//
-	// One figure above all belongs with these: measured on a *real request*,
-	// through a patched Zoraxy serving traffic, removing this cost entirely is
-	// worth **1.12x at today's 22 entries and 1.89x at 512** — because roughly
-	// 111 µs of a rejected request is TLS, parsing and routing, which none of
-	// this touches. The larger multipliers in bench/whitelist-scan are the
-	// access check in isolation and should never be quoted without that one.
-	//
-	// That directory holds the code, its fixture guards, the radix trie
-	// zoraxy#986 asks for, and the throwaway patch used to close the loop. Read
-	// its opening section before quoting any of it: three independent reviews
-	// found the raw scan tables sound and most of the prose derived from them
-	// wrong.
+	// And one figure keeps the rest in proportion: measured on a *real request*,
+	// through a Zoraxy patched to remove this cost entirely, the whole saving is
+	// 1.12x at today's 22 entries and 1.89x at 512. Roughly 111 µs of a rejected
+	// request is TLS, parsing and routing, which none of this touches. The
+	// numbers above are the access check in isolation and mean much less than
+	// they look like on their own.
 	providerMaxPrefixes = 512
 	// After a failure, retry sooner than the normal interval — a transient
 	// failure must not leave a provider stale for half a day — but not on every
