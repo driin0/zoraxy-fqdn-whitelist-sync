@@ -87,9 +87,15 @@ func main() {
 	//
 	// After the response there is far less room than the POSIX path suggests.
 	// POSIX: SIGTERM, then five seconds of polling before Zoraxy kills. Windows:
-	// no signal at all, 300ms, then Kill — against the SDK's 100ms self-exit,
-	// which leaves **200ms of margin and nothing to catch** if it is missed. Any
-	// cleanup that does not fit before the response has no home on Windows.
+	// no signal at all, 300ms, then Kill — against the SDK's own self-exit.
+	//
+	// Measured on Windows 11 (build 26200) rather than deduced: /term answered
+	// 200 in 48ms, the process exited by itself 88ms later, and the signal
+	// handler below never printed — only the /term handler did. So the clean
+	// stop on Windows comes entirely from the SDK's timer, leaving about
+	// **212ms of margin** before Zoraxy's kill and nothing to catch if it is
+	// missed. Any cleanup that does not fit before the response has no home
+	// there.
 	//
 	// Make it callable from both paths (a sync.Once), because a SIGTERM can also
 	// arrive without this handler running at all: at machine shutdown, or if the

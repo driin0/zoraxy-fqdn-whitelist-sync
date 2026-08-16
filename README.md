@@ -50,11 +50,12 @@ Builds are published for `linux/amd64`, `linux/386`, `linux/arm`,
 `linux/arm64`, `linux/mipsle`, `linux/riscv64` and `windows/amd64` — the
 platforms Zoraxy itself ships for. `linux/amd64` and `linux/arm64` have been
 run against a live Zoraxy, the latter on a Raspberry Pi 5 and a Pi 3 among
-others. The `linux/arm`
-build has been executed on a Raspberry Pi 2 (ARMv7, 32-bit) far enough to
-confirm it starts and introspects correctly, but not yet against a live Zoraxy.
-The remaining four are the same source cross-compiled, with no platform-specific
-code, but untested.
+others. The `linux/arm` and
+`windows/amd64` builds have been executed on real hardware — a Raspberry Pi 2
+and Windows 11 — far enough to confirm they start and introspect correctly, and
+on Windows to confirm the plugin stops cleanly when asked, but neither has run
+against a live Zoraxy. The remaining three are the same source cross-compiled,
+with no platform-specific code, but untested.
 
 ## Install
 
