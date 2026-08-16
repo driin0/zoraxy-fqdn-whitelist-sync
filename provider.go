@@ -94,11 +94,12 @@ const (
 	//
 	// Measured 2026-08-16 with Cloudflare's real published list, per proxied
 	// request, across the hardware Zoraxy actually ships builds for. The
-	// spread is the finding — 55x between fastest and slowest at today's 22
-	// entries, so a number from one machine says nothing about another:
+	// spread is the finding — 23x between the fastest and slowest of these at
+	// today's 22 entries, so a number from one machine says nothing about
+	// another:
 	//
 	//   entries   EPYC vCPU    Pi 5     Pi 3 B+    Pi 2 B (armv7)
-	//        22      9.6 µs   17.1 µs    163 µs      224 µs
+	//        22      9.6 µs   17.1 µs    163 µs      224 µs   <- real CF list
 	//       512      200 µs    410 µs   3.70 ms     5.14 ms
 	//    16,762     8.82 ms   15.1 ms    152 ms      178 ms
 	//
@@ -114,9 +115,11 @@ const (
 	// the rule's total, a second provider in the registry owes a per-rule bound.
 	//
 	// bench/whitelist-scan in the workspace repo holds the code, its fixture
-	// guards, and the radix trie zoraxy#986 asks for — worth about 2.4x end to
-	// end rather than the two orders of magnitude its own timings suggest,
-	// because it replaces only one of the two matchers the scan runs.
+	// guards, and the radix trie zoraxy#986 asks for — worth about 2.0-2.1x end
+	// to end rather than the two orders of magnitude its own timings suggest,
+	// because it replaces only one of the two matchers the scan runs. Read that
+	// README before quoting any of this: three independent reviews found the
+	// raw scan tables sound and most of the prose derived from them wrong.
 	providerMaxPrefixes = 512
 	// After a failure, retry sooner than the normal interval — a transient
 	// failure must not leave a provider stale for half a day — but not on every
