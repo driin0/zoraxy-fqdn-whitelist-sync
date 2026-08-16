@@ -104,9 +104,8 @@ const (
 	//
 	// So 512 is comfortable on a server and emphatically not on a Pi, and the
 	// megabyte-scale provider lists are disqualifying rather than merely large.
-	// Lowering this constant is still the wrong lever — halving it halves 5 ms,
-	// while the radix trie below divides it by 141 — so it stays the tripwire
-	// it was designed to be.
+	// It stays at 512 all the same: it is a tripwire that today's 22 entries
+	// come nowhere near, so tuning it changes nothing anyone is paying.
 	//
 	// The allocations are the part no short list escapes: they are per request,
 	// so they scale with traffic rather than with list length, and they fall on
@@ -115,8 +114,9 @@ const (
 	// the rule's total, a second provider in the registry owes a per-rule bound.
 	//
 	// bench/whitelist-scan in the workspace repo holds the code, its fixture
-	// guards, and the radix trie zoraxy#986 asks for: zero allocations at every
-	// size, and 141x faster than the scan on the weakest machine measured.
+	// guards, and the radix trie zoraxy#986 asks for — worth about 2.4x end to
+	// end rather than the two orders of magnitude its own timings suggest,
+	// because it replaces only one of the two matchers the scan runs.
 	providerMaxPrefixes = 512
 	// After a failure, retry sooner than the normal interval — a transient
 	// failure must not leave a provider stale for half a day — but not on every
