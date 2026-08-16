@@ -92,21 +92,24 @@ const (
 	// provider's endpoints, so nothing checks what a rule accumulates across
 	// several of them.
 	//
-	// Benchmarked 2026-08-16 on the deployment target — an EPYC 7763 vCPU, not
-	// a laptop, which reads 2.6-3.7x faster and misled a first pass at this. A
-	// full non-matching scan there is 3.5 µs at 22 entries, 63 µs at 512,
-	// 301 µs at 2,560 and 2.0 ms across all 16,762 of AWS. 512 is comfortable,
-	// which is why it stays; the megabyte-scale provider lists are not, which
-	// is one more reason they are not in the registry.
+	// Measured 2026-08-16 on the deployment target — an EPYC 7763 vCPU at
+	// GOMAXPROCS=1, not a laptop — with Cloudflare's real published list, not
+	// a synthetic stand-in: a non-matching scan of today's 22 entries costs
+	// 9.6 µs and 132 allocations, **per proxied request**. 512 entries costs
+	// 200 µs, 2,560 costs 1.12 ms, and all 16,762 of AWS costs 8.8 ms.
 	//
-	// Garbage is the cost that does not need a long list: 36 allocations per
-	// request at 22 entries, 4,032 at 2,560, on every request through the rule.
-	// It scales with traffic rather than with list length, and it falls on
+	// So 512 is not a generous ceiling, it is about the right one, and the
+	// megabyte-scale provider lists are disqualifying rather than merely large.
+	//
+	// The allocations are the part no short list escapes: they are per request,
+	// so they scale with traffic rather than with list length, and they fall on
 	// requests matching *nothing* — scanners and bots — since only a hit exits
-	// early. A per-rule bound belongs with a second provider on those grounds.
+	// early. Since this constant bounds one provider while the cost is paid on
+	// the rule's total, a second provider in the registry owes a per-rule bound.
 	//
-	// See bench/whitelist-scan in the workspace repo, which also measures the
-	// radix trie zoraxy#986 asks for: 44 ns and zero allocations at every size.
+	// bench/whitelist-scan in the workspace repo holds the code, the guards on
+	// its own fixtures, and the radix trie zoraxy#986 asks for — flat at
+	// ~70 ns and zero allocations, 177x faster at the size that ships today.
 	providerMaxPrefixes = 512
 	// After a failure, retry sooner than the normal interval — a transient
 	// failure must not leave a provider stale for half a day — but not on every
