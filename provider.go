@@ -34,8 +34,24 @@ type Provider struct {
 	Endpoints []string
 }
 
-// KnownProviders is the whole registry. Adding one is a row here plus an icon
-// in the UI dropdown — the reconciler does not change.
+// KnownProviders is the whole registry, and it has one member.
+//
+// Adding a second is not the row it looks like, which is worth saying here
+// because here is where someone would try. Every other published list was
+// measured on 2026-08-16 (notes/2026-08-16-provider-registry-survey.md) and
+// Cloudflare turned out to be the only one publishing one CIDR per line:
+// Fastly, Imperva, Google, AWS and Azure are all JSON, each with its own key
+// names. parsePrefixList therefore covers exactly one provider, and a second
+// needs a decoder chosen per format.
+//
+// A second provider also owes a per-rule bound on the prefix count — see
+// providerMaxPrefixes, which counts one provider at a time.
+//
+// Fastly is the cheapest candidate if it is ever wanted: 21 prefixes, one
+// endpoint, no authentication. AWS and Azure publish the right list for this
+// plugin's purpose — the addresses their CDN uses to reach an origin,
+// CLOUDFRONT_ORIGIN_FACING at 49 and AzureFrontDoor.Backend at 239 — but both
+// bury it in megabytes, past the body limit below.
 var KnownProviders = []Provider{
 	{
 		ID:   "cloudflare",
@@ -71,6 +87,13 @@ const (
 	// IsIPWhitelisted iterates every entry and re-parses each CIDR on *every
 	// proxied request*. Every entry is latency on every request, so this is a
 	// bound to respect, not a budget to spend.
+	//
+	// Note what it does not bound. checkPrefixCount runs on the union of one
+	// provider's endpoints, so this is a per-provider limit, while the cost
+	// above is paid on the rule's whole whitelist. Nothing checks what a rule
+	// accumulates across several providers. That is unreachable while the
+	// registry has one member and reachable the moment it has two, so a per-rule
+	// bound belongs with the second provider, not after it.
 	providerMaxPrefixes = 512
 	// After a failure, retry sooner than the normal interval — a transient
 	// failure must not leave a provider stale for half a day — but not on every
