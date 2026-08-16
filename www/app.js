@@ -35,9 +35,10 @@ function notify(msg, ok) {
 }
 
 // --- talking to the plugin ----------------------------------------------
-// Everything goes through these two, so every response is read by apiError
-// (api.js) instead of by its HTTP status. Guarded by
-// TestPanelHasOneWayToCallTheAPI.
+// Everything goes through these two, so every response — success or failure —
+// is read by apiError/apiErrorFromXHR (api.js) instead of by its HTTP status.
+// TestPanelHasOneWayToCallTheAPI counts the call sites, so it holds for
+// $.cjax and $.getJSON; a raw $.ajax or fetch would slip past it.
 
 // The 5s poll calls these on every tick; re-render only on a change.
 function setUnreachable(err) {
@@ -67,6 +68,11 @@ function apiGet(url, onOk, onFail) {
     });
 }
 
+// The failure branch goes through apiErrorFromXHR for the same reason apiGet
+// does: an expired session answers the login page, jQuery reports
+// "parsererror", and reading xhr.responseJSON directly turns that into the
+// caller's generic failMsg. The operator was told "Save failed" and left to
+// wonder, when the fix is to reload the page.
 function apiPost(url, data, onOk, failMsg) {
     $.cjax({
         url: url, method: "POST", data: data,
@@ -75,7 +81,10 @@ function apiPost(url, data, onOk, failMsg) {
             if (err) { notify(err, false); return; }
             onOk();
         },
-        error: xhr => notify((xhr.responseJSON && xhr.responseJSON.error) || failMsg, false),
+        error: function (xhr, textStatus) {
+            const err = apiErrorFromXHR(xhr, textStatus);
+            notify(err === "no answer from the plugin" ? failMsg : err, false);
+        },
     });
 }
 

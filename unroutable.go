@@ -87,7 +87,9 @@ func (u *UnroutableSet) Contains(ip string) bool {
 // prefix past the filter in silence.
 //
 // Input that is not a CIDR does not overlap. It is not a prefix at all, and
-// the caller rejects it before this is reached (checkPrefix in provider.go).
+// the provider path rejects it first (checkPrefix in provider.go). The
+// owned-entry path in reconciler.go deliberately does not, and routes
+// non-CIDR values to Contains instead.
 func (u *UnroutableSet) Overlaps(prefix string) bool {
 	if u == nil {
 		return false

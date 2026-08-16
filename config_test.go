@@ -532,7 +532,7 @@ func TestSaveConfigLeavesNoTempFile(t *testing.T) {
 	}
 }
 
-// A config written before providers existed must load byte-for-byte the same
+// A config written before providers existed must load with the same values (byte-for-byte integrity is asserted by TestLoadingAConfigNeverRewritesTheFileOnDisk)
 // and simply gain the defaults. There is no migration here and there must
 // never need to be one.
 func TestLoadConfigDefaultsProviderInterval(t *testing.T) {

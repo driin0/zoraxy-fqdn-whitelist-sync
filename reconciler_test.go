@@ -1100,7 +1100,7 @@ func TestForcedRefreshFetchesASharedProviderOnceNotOncePerRule(t *testing.T) {
 	}
 }
 
-// Fix round 1, F2: main.go constructs the Reconciler before Task 7 assigns a
+// Fix round 1, F2: main.go once constructed the Reconciler before assigning a
 // Fetcher, so a hand-edited "providers" key must fail like an ordinary fetch
 // rather than dereference a nil interface and kill the reconcile-loop
 // goroutine.
@@ -1123,7 +1123,7 @@ func TestNilFetcherBehavesLikeAFailedFetchInsteadOfPanicking(t *testing.T) {
 	}
 }
 
-// Fix round 1, F3: before Task 7 wires ProviderPeriod from config each cycle,
+// Fix round 1, F3: before runReconcileLoop wired ProviderPeriod from config each cycle,
 // the field's zero value must not mean "due again immediately" — that would
 // turn every tick into a fetch instead of honouring any interval at all.
 func TestZeroProviderPeriodDoesNotForceARefetchEveryCycle(t *testing.T) {
@@ -1156,7 +1156,7 @@ func TestZeroProviderPeriodDoesNotForceARefetchEveryCycle(t *testing.T) {
 //
 // This covers the empty-cache branch only: the fetcher errors, so nothing is
 // cached and the fallback to the owned entries is what runs. The warm-cache
-// branch — the one taken on 1,439 of the day's 1,440 ticks — is covered by
+// branch — the one taken on 2,878 of the day's 2,880 ticks — is covered by
 // TestACachedProviderPrefixOverlappingANewlyBlockedRangeIsRevokedWithoutARefetch.
 func TestOwnedProviderPrefixOverlappingANewlyBlockedRangeIsRevokedWithAnEmptyCache(t *testing.T) {
 	client := newFakeClient()

@@ -280,7 +280,7 @@
                             Comma-separated CIDRs; a bare address is taken as a single host. An FQDN resolving only into these is
                             shown as offline and its previous IP is revoked at once; a
                             provider prefix overlapping them is refused and revoked the
-                            same way. Empty = authorise everything a source yields.
+                            same way. Empty = nothing is blocked here; provider lists are still refused if over-broad or too long.
                         </p>
                         <!-- Recovery path: once the stored list is empty the
                              defaults are no longer in the field, and retyping

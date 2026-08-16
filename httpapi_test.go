@@ -188,48 +188,51 @@ func TestHandleRefreshTriggers(t *testing.T) {
 	}
 }
 
-func TestPostOnlyRejectsGET(t *testing.T) {
+// The GET guard, tested through Register rather than around it.
+//
+// The previous version of this test wrapped each handler by hand —
+// `postOnly(api.handleProviderAdd)` — which tests postOnly and nothing else.
+// Register is where the wrapping actually happens and where it can be lost, and
+// removing postOnly from six registrations left that test green. This drives
+// the real mux, so a bare registration fails here.
+//
+// What it still cannot catch is a *new* handler added to Register without
+// postOnly and without a line below. Keeping the list complete is a review
+// obligation, not something the test enforces.
+func TestRegisterWrapsEveryMutatingHandlerInPostOnly(t *testing.T) {
 	api, store := newAPIServer(t, `{"interval_seconds":300,"rules":[{"rule_id":"default","fqdns":[]}]}`, &fakeLister{})
-	h := postOnly(api.handleFQDNAdd)
-	req := httptest.NewRequest(http.MethodGet, "/ui/api/fqdn/add?rule_id=default&fqdn=evil.example.com", nil)
-	rec := httptest.NewRecorder()
-	h(rec, req)
-	if rec.Code != http.StatusMethodNotAllowed {
-		t.Fatalf("code = %d, want 405", rec.Code)
+	// Register uses http.HandleFunc, so this may run only once per process.
+	const base = "/testui"
+	api.Register(base)
+
+	mutating := []string{
+		"/api/fqdn/add", "/api/fqdn/remove", "/api/interval", "/api/dns-servers",
+		"/api/grace", "/api/unroutable", "/api/refresh",
+		"/api/provider/add", "/api/provider/remove", "/api/provider-interval",
 	}
+	for _, path := range mutating {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, base+path+"?rule_id=default&fqdn=evil.example.com&seconds=60&provider=cloudflare", nil)
+		http.DefaultServeMux.ServeHTTP(rec, req)
+		if rec.Code != http.StatusMethodNotAllowed {
+			t.Errorf("GET %s: code = %d, want 405 — is it registered without postOnly?", path, rec.Code)
+		}
+	}
+
+	// The two read endpoints must NOT be behind it, or the panel cannot load.
+	for _, path := range []string{"/api/state", "/api/rules"} {
+		rec := httptest.NewRecorder()
+		http.DefaultServeMux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, base+path, nil))
+		if rec.Code == http.StatusMethodNotAllowed {
+			t.Errorf("GET %s: 405, but this one must answer GET", path)
+		}
+	}
+
 	if len(store.Snapshot().Rules[0].FQDNs) != 0 {
-		t.Errorf("GET must not mutate the store: %+v", store.Snapshot().Rules)
+		t.Errorf("a rejected GET mutated the store: %+v", store.Snapshot().Rules)
 	}
 	if drained(api.Trigger) {
-		t.Error("GET must not trigger a reconcile")
-	}
-
-	// Every other mutating handler, checked the same way. postOnly is applied
-	// per handler at registration, so one of them being wrapped says nothing
-	// about the rest: the way this guard gets lost is a new handler registered
-	// bare, which only a per-handler assertion catches.
-	h = postOnly(api.handleProviderAdd)
-	req = httptest.NewRequest(http.MethodGet, "/ui/api/provider/add?rule_id=default&provider=cloudflare", nil)
-	rec = httptest.NewRecorder()
-	h(rec, req)
-	if rec.Code != http.StatusMethodNotAllowed {
-		t.Errorf("handleProviderAdd: code = %d, want 405", rec.Code)
-	}
-
-	h = postOnly(api.handleProviderRemove)
-	req = httptest.NewRequest(http.MethodGet, "/ui/api/provider/remove?rule_id=default&provider=cloudflare", nil)
-	rec = httptest.NewRecorder()
-	h(rec, req)
-	if rec.Code != http.StatusMethodNotAllowed {
-		t.Errorf("handleProviderRemove: code = %d, want 405", rec.Code)
-	}
-
-	h = postOnly(api.handleProviderInterval)
-	req = httptest.NewRequest(http.MethodGet, "/ui/api/provider-interval?seconds=86400", nil)
-	rec = httptest.NewRecorder()
-	h(rec, req)
-	if rec.Code != http.StatusMethodNotAllowed {
-		t.Errorf("handleProviderInterval: code = %d, want 405", rec.Code)
+		t.Error("a rejected GET triggered a reconcile")
 	}
 }
 

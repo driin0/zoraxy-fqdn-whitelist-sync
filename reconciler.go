@@ -95,6 +95,12 @@ func canonicalEntry(entry string) string {
 // on the bare network address misses the case where only part of the prefix
 // (not its first address) falls inside a range the operator adds later, or
 // where the provider prefix is the wider one and contains the blocked range.
+// canonicalEntry has already turned any bare address into a CIDR, so this only
+// fails for something that is neither — a Zoraxy wildcard such as 192.0.2.*.
+// Contains answers false for those, so they are kept rather than classified:
+// the filter cannot judge what it cannot parse. (Formerly described as a
+// fallback that stops such a value passing the filter; it does not.)
+//
 // A value that fails to parse as a CIDR (which should not happen for an
 // owned entry) falls back to Contains rather than silently passing the
 // filter.
@@ -307,7 +313,7 @@ func (r *Reconciler) Rule(rule RuleConfig) ReconcileResult {
 			st.lastErr = fmt.Sprintf("unknown provider %q", id)
 		case r.Fetcher == nil:
 			// Reachable today: main.go constructs the Reconciler with no
-			// Fetcher, and Task 7 is what assigns one. An invariant that
+			// Fetcher. No longer reachable from main.go, which wires one before the first cycle; four loop tests still construct it that way. An invariant that
 			// depends on the caller having wired a field is not an
 			// invariant — a hand-edited "providers" key must not panic the
 			// reconcile loop, it must fail like any other fetch.
@@ -354,7 +360,7 @@ func (r *Reconciler) Rule(rule RuleConfig) ReconcileResult {
 				st.lastSuccess = r.now()
 				st.lastErr = ""
 				// A zero ProviderPeriod — the field's own zero value before
-				// Task 7 wires it from config each cycle — must not read as
+				// runReconcileLoop sets it from config before the first cycle, so this is not reachable from main.go — must not read as
 				// "due again immediately"; that would collapse the schedule
 				// into a fetch on every tick.
 				period := r.ProviderPeriod
@@ -426,9 +432,11 @@ func (r *Reconciler) Rule(rule RuleConfig) ReconcileResult {
 		result.Providers = append(result.Providers, status)
 	}
 
-	// 3a. Add desired IPs not already authorised. An address already covered
-	// by an admin entry is left alone — admin entries must never be converted
-	// into plugin-owned ones by a collision.
+	// 3a. Add desired IPs not already authorised. An address whose exact
+	// canonical form is already an admin entry is left alone — admin entries
+	// must never be converted into plugin-owned ones by a collision. Note the
+	// test is exact: an admin entry for a containing subnet is not consulted, so
+	// an address inside it is still added in its own right.
 	// authorised records which canonical forms are actually in the whitelist
 	// once this step is done, so 3b can tell a completed replacement from a
 	// failed one.

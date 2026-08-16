@@ -174,7 +174,7 @@ func TestPanelScriptsAreEmbedded(t *testing.T) {
 }
 
 // Every call to the plugin's API must go through the two helpers that consult
-// apiError, so a new endpoint cannot quietly reintroduce the "200 means it
+// apiError, so a new endpoint added through these two cannot reintroduce the "200 means it
 // worked" assumption. One $.cjax and one $.getJSON in the whole panel is what
 // that looks like from here.
 func TestPanelHasOneWayToCallTheAPI(t *testing.T) {

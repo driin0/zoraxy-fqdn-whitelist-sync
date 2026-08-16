@@ -323,8 +323,9 @@ func (f *HTTPProviderFetcher) fetchOne(url string) ([]string, error) {
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("%s: http %d", url, resp.StatusCode)
 	}
-	// One byte past the ceiling, so a body that reaches the limit is detected
-	// as oversized instead of being silently truncated into a valid answer.
+	// One byte past the ceiling, so a body that *exceeds* the limit is detected
+	// instead of being silently truncated into a valid answer. A body of exactly
+	// providerBodyLimit is accepted, which is what the error wording says too.
 	body, err := io.ReadAll(io.LimitReader(resp.Body, providerBodyLimit+1))
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", url, err)
