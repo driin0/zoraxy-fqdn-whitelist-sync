@@ -263,7 +263,7 @@
                             </button>
                         </div>
                         <p class="muted" style="margin-top:0.4em;">
-                            FQDNs only, and only when the DNS server is unreachable — a provider whose list cannot be fetched keeps its ranges regardless. 0 = remove at once.
+                            FQDNs only, and only when a lookup fails without an answer — a timeout, a server failure — a provider whose list cannot be fetched keeps its ranges regardless. 0 = remove at once.
                             A name that no longer exists is always removed at once.
                             Restarting the plugin restarts this window.
                         </p>
@@ -277,7 +277,7 @@
                             </button>
                         </div>
                         <p class="muted" style="margin-top:0.4em;">
-                            Comma-separated CIDRs. An FQDN resolving only into these is
+                            Comma-separated CIDRs; a bare address is taken as a single host. An FQDN resolving only into these is
                             shown as offline and its previous IP is revoked at once; a
                             provider prefix overlapping them is refused and revoked the
                             same way. Empty = authorise everything a source yields.
@@ -301,9 +301,11 @@
                         </div>
                         <p class="muted" style="margin-top:0.4em;">
                             How often published CDN ranges are refetched. They change
-                            about twice a year, so the minimum is one hour. A saved
-                            value takes effect from the next fetch; "Refresh now"
-                            applies it at once.
+                            about twice a year, so twelve hours is the default; the
+                            one-hour minimum is a politeness floor towards the
+                            endpoint. A saved value takes effect from the next fetch;
+                            "Refresh now" forces one immediately, at most once a
+                            minute.
                         </p>
                     </div>
                 </div>
@@ -380,7 +382,7 @@
                         <div class="item">An FQDN resolving into a never-authorise range (e.g. <code>192.0.2.1</code>) is treated as offline: nothing is whitelisted and its previous IP is removed at once. A provider prefix that overlaps one is refused and revoked, and the row is marked blocked.</div>
                         <div class="item">Manually-added whitelist entries are never touched.</div>
                         <div class="item">A provider's published ranges are refetched on their own slower timer and added the same way, tagged <code>fqdn-sync:&lt;provider&gt;</code>.</div>
-                        <div class="item">If a provider list cannot be fetched, its ranges stay authorised and the row is marked stale — a fetch failure never revokes access.</div>
+                        <div class="item">If a provider list cannot be fetched, the ranges it already holds stay authorised and the row is marked stale — a fetch failure never revokes access. If none are held yet, the row is marked failed and nothing is authorised for it.</div>
                     </div>
                     </div>
                 </details>

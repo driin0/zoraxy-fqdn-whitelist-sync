@@ -139,7 +139,7 @@ function renderStatusMsg() {
             .html('<i class="check circle icon"></i> Whitelist mode is enabled on this rule.').show();
     } else {
         $m.attr("class", "ui warning message")
-            .html('<i class="exclamation triangle icon"></i> Whitelist mode is <b>disabled</b> — synced IPs are not enforced until you enable it in the Access Rules panel.').show();
+            .html('<i class="exclamation triangle icon"></i> Whitelist mode is <b>disabled</b> — synced addresses and ranges are not enforced until you enable it in the Access Rules panel.').show();
     }
 }
 
@@ -343,7 +343,7 @@ function renderTable() {
         }
         $t.append(`
             <tr>
-                <td><i class="globe icon"></i> ${esc(fqdn)}${graceLeft ? '<div class="graceNote">DNS failing — last known IPs kept until the window closes.</div>' : ""}${(offlineIPs && offlineIPs.length > 0 && !ok) ? '<div class="graceNote">DDNS reports the device unreachable (' + esc(offlineIPs.join(", ")) + ') — not authorised.</div>' : ""}</td>
+                <td><i class="globe icon"></i> ${esc(fqdn)}${graceLeft ? '<div class="graceNote">DNS failing — last known IPs kept until the window closes.</div>' : ""}${(offlineIPs && offlineIPs.length > 0 && !ok) ? '<div class="graceNote">Resolved only into a never-authorise range (' + esc(offlineIPs.join(", ")) + ') — not authorised.</div>' : ""}</td>
                 <td>${ipText}</td>
                 <td class="${statusCls}">${statusTxt}</td>
                 <td><button class="ui icon basic mini red button removeBtn" data-fqdn="${esc(fqdn)}"><i class="trash alternate icon"></i></button></td>
@@ -473,7 +473,7 @@ $(function () {
         // resolved address, sentinels included. Only confirm the case that
         // actually changes something — clearing a list that was non-empty.
         if (willBeEmpty && stored.length > 0 &&
-            !confirm("This clears the never-authorise list. Every resolved address, including sentinel addresses like 192.0.2.1, will be authorised. Continue?")) {
+            !confirm("This clears the never-authorise list. Every address a name resolves to and every range a provider publishes, sentinel addresses like 192.0.2.1 included, will be authorised. Continue?")) {
             return;
         }
         apiPost("./api/unroutable", { cidrs: cidrs },

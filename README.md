@@ -9,31 +9,37 @@ Built for the case where the people who must reach a service sit behind
 dynamic residential addresses — a DDNS name per site, and the whitelist keeps
 up on its own.
 
-![The plugin's panel in Zoraxy. Cloudflare's twenty-two published ranges and four FQDNs are synced into the Default rule's whitelist — one name resolving to two addresses, another to both an IPv4 and an IPv6 — while a roaming laptop whose DDNS has fallen back to a sentinel address is reported offline and left unauthorised. Under the table, an expanded "How the sync works" panel lists what the plugin guarantees.](docs/panel.png)
+![The plugin's panel in Zoraxy. Cloudflare's twenty-two published ranges and three of four FQDNs are synced into the Default rule's whitelist — one name resolving to two addresses, another to both an IPv4 and an IPv6 — while the fourth, a roaming laptop whose DDNS has fallen back to a sentinel address, is reported offline and left unauthorised. Under the table, an expanded "How the sync works" panel lists what the plugin guarantees.](docs/panel.png)
 
 ## What it guarantees
 
-- **It fails closed.** When a name stops resolving, its addresses lose their
-  authorisation. A DNS outage narrows access, it never widens it.
+- **It fails closed on FQDNs.** When a name stops resolving, its addresses
+  lose their authorisation. A DNS outage narrows access, it never widens it.
+  Provider ranges follow the opposite policy, for the reason given below.
 - **A grace window for ambiguity.** When a lookup fails in a way that leaves
   the answer *unknown* (a timeout, a server failure) rather than *negative*,
   the last known addresses are kept for a configurable window — one hour by
   default — so a flaky resolver does not lock people out. An authoritative
   NXDOMAIN is not ambiguous and revokes immediately.
-- **It only touches its own entries.** Every address it adds is tagged with a
+- **It only touches its own entries.** Every entry it adds is tagged with a
   `fqdn-sync:<owner>` comment, where the owner is the FQDN or provider id
   that authorised it. Entries added by an administrator are never modified
   or removed.
-- **It never authorises an unroutable address.** DDNS providers publish
-  sentinels such as `192.0.2.1` for an offline device, and a host that failed
-  DHCP self-assigns a link-local address. Whitelisting those would authorise
-  the wrong thing, so an FQDN resolving only into such ranges is reported as
-  offline instead. The list is configurable.
+- **It never authorises an unroutable address or range.** DDNS providers
+  publish sentinels such as `192.0.2.1` for an offline device, and a host that
+  failed DHCP self-assigns a link-local address. Whitelisting those would
+  authorise the wrong thing, so an FQDN resolving only into such ranges is
+  reported as offline instead — and a published provider prefix that *overlaps*
+  one is refused and removed on the next cycle, which the panel marks
+  **blocked**. This is the one thing that does revoke a provider range. The list
+  is configurable.
 - **A provider list that cannot be fetched never revokes.** Published CDN
   ranges are refetched on their own slow timer; if a fetch fails, or returns
   anything anomalous, the ranges already authorised stay authorised and the
-  panel marks them stale. A whitelist source whose failure took the site down
-  would be worse than one that goes briefly out of date.
+  panel marks them stale. If none were authorised yet — a first fetch failing
+  after a restart — the row is marked failed and nothing is authorised for that
+  provider. A whitelist source whose failure took the site down would be worse
+  than one that goes briefly out of date.
 
 ## Requirements
 
@@ -42,8 +48,9 @@ candidates, most recently v3.3.4-rc3.
 
 Builds are published for `linux/amd64`, `linux/386`, `linux/arm`,
 `linux/arm64`, `linux/mipsle`, `linux/riscv64` and `windows/amd64` — the
-platforms Zoraxy itself ships for. `amd64` and `arm64` have been run against a
-live Zoraxy, `arm64` on a Raspberry Pi 5 and a Pi 3 among others. The `linux/arm`
+platforms Zoraxy itself ships for. `linux/amd64` and `linux/arm64` have been
+run against a live Zoraxy, the latter on a Raspberry Pi 5 and a Pi 3 among
+others. The `linux/arm`
 build has been executed on a Raspberry Pi 2 (ARMv7, 32-bit) far enough to
 confirm it starts and introspects correctly, but not yet against a live Zoraxy.
 The remaining four are the same source cross-compiled, with no platform-specific
@@ -59,18 +66,24 @@ architecture, makes it executable and places it in its own plugin folder.
 
 ### Manually
 
-Download the binary for your architecture from the
-[latest release](https://github.com/driin0/zoraxy-fqdn-whitelist-sync/releases/latest)
-and put it in Zoraxy's plugin directory, inside a folder **named after the
-binary** — Zoraxy runs the file whose name matches its folder:
+Release assets are named `fqdn_whitelist_sync_<os>_<arch>` — for example
+`fqdn_whitelist_sync_linux_amd64`, or `fqdn_whitelist_sync_windows_amd64.exe`.
+Download the one for your platform from the
+[latest release](https://github.com/driin0/zoraxy-fqdn-whitelist-sync/releases/latest),
+**rename it** to `fqdn-whitelist-sync`, and put it in Zoraxy's plugin directory
+inside a folder of the same name — Zoraxy runs the file whose name matches its
+folder:
 
     plugins/
     └── fqdn-whitelist-sync/
         └── fqdn-whitelist-sync
 
-Make it executable (`chmod +x fqdn-whitelist-sync`) and restart Zoraxy. Drop
-[`icon.png`](icon.png) beside it if you want the icon in the plugin manager;
-the plugin manager fetches it for you.
+Make it executable (`chmod +x fqdn-whitelist-sync`) and restart Zoraxy. On
+Windows keep the `.exe` extension on both the folder's file and its name, and
+skip the `chmod`.
+
+If you want the icon in the plugin manager, put [`icon.png`](icon.png) in the
+same folder. Installing through the plugin manager instead fetches it for you.
 
 To update, replace the binary, re-apply `chmod +x`, and restart Zoraxy.
 
@@ -93,7 +106,7 @@ The plugin writes `config.json` next to its binary on first start:
 | Key | Meaning | Default |
 |---|---|---|
 | `interval_seconds` | How often to re-resolve and reconcile. Minimum 15. | `30` |
-| `dns_servers` | Resolvers to query, in order. Empty means the system resolver. | system |
+| `dns_servers` | Resolvers to query, in order. Empty means the system resolver. Used for FQDN lookups only — provider lists are always fetched through the system resolver. | system |
 | `dns_failure_grace_seconds` | How long to keep the last known IPs when a lookup fails ambiguously. `0` fails closed at once. | `3600` |
 | `unroutable_cidrs` | Ranges that must never be authorised. An explicit empty list disables the check. | RFC 5737, loopback, link-local, and other sentinels |
 | `provider_interval_seconds` | How often published provider ranges are refetched. Minimum 3600. | `43200` |
@@ -117,7 +130,7 @@ redirect.
 
 Removing the plugin does not remove the entries it added. Zoraxy stops the
 plugin and revokes its API key, but the whitelist entries stay in the access
-rule — 22 CDN prefixes, if a provider was configured. Delete them from the
+rule — its provider prefixes, twenty-two for Cloudflare today. Delete them from the
 Access Rules panel if you no longer want them.
 
 ## Build

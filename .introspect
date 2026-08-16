@@ -25,7 +25,7 @@
   {
    "method": "GET",
    "endpoint": "/plugin/api/whitelist/list",
-   "reason": "Read the current whitelist to reconcile"
+   "reason": "Read the current whitelist to reconcile, and to recover the last authorised addresses and ranges after a restart"
   },
   {
    "method": "POST",
@@ -35,7 +35,7 @@
   {
    "method": "POST",
    "endpoint": "/plugin/api/whitelist/ip/remove",
-   "reason": "Remove stale FQDN addresses and provider ranges from the whitelist"
+   "reason": "Remove addresses and ranges that are no longer authorised, and entries left in a legacy format"
   }
  ]
 }
