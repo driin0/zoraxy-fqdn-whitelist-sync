@@ -92,16 +92,21 @@ const (
 	// provider's endpoints, so nothing checks what a rule accumulates across
 	// several of them.
 	//
-	// Benchmarked 2026-08-16 against Zoraxy's own matchers rather than
-	// estimated: a full non-matching scan is 0.95 µs at 22 entries, 22 µs at
-	// 512, 115 µs at 2,560, and 771 µs across all 16,762 of AWS. Beside a
-	// network round trip none of that is latency worth defending against, and
-	// the aggregate is a smaller problem than it first looks.
+	// Benchmarked 2026-08-16 on the deployment target — an EPYC 7763 vCPU, not
+	// a laptop, which reads 2.6-3.7x faster and misled a first pass at this. A
+	// full non-matching scan there is 3.5 µs at 22 entries, 63 µs at 512,
+	// 301 µs at 2,560 and 2.0 ms across all 16,762 of AWS. 512 is comfortable,
+	// which is why it stays; the megabyte-scale provider lists are not, which
+	// is one more reason they are not in the registry.
 	//
-	// Garbage is the cost that does scale: 4,032 allocations and 122 KB per
-	// request at 2,560 entries, and it is paid by requests matching *nothing* —
-	// scanners and bots — since only a hit exits early. A per-rule bound is
-	// worth adding alongside a second provider on those grounds, not on latency.
+	// Garbage is the cost that does not need a long list: 36 allocations per
+	// request at 22 entries, 4,032 at 2,560, on every request through the rule.
+	// It scales with traffic rather than with list length, and it falls on
+	// requests matching *nothing* — scanners and bots — since only a hit exits
+	// early. A per-rule bound belongs with a second provider on those grounds.
+	//
+	// See bench/whitelist-scan in the workspace repo, which also measures the
+	// radix trie zoraxy#986 asks for: 44 ns and zero allocations at every size.
 	providerMaxPrefixes = 512
 	// After a failure, retry sooner than the normal interval — a transient
 	// failure must not leave a provider stale for half a day — but not on every
