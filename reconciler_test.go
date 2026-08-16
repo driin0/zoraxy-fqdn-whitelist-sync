@@ -1411,3 +1411,69 @@ func TestALegacyEntryIsKeptWhenItsReplacementCannotBeAdded(t *testing.T) {
 		t.Error("the failed add should still be reported")
 	}
 }
+
+// Convergence, which is what bounds this plugin's exposure to anything that
+// loses a write underneath it.
+//
+// Reconcile is not "apply my changes" — it reads the whitelist every cycle and
+// makes it match `desired`. So an entry that disappears for any reason, or a
+// removal that gets undone, is corrected on the next tick without anyone
+// noticing. Upstream has a race that can silently discard a concurrent write
+// (notes/2026-08-16-zoraxy-whitelist-add-race.md in the workspace repo); this
+// is why the consequence for entries this plugin owns is bounded to one
+// interval rather than being permanent.
+//
+// These two guard a property that is emergent rather than written down in a
+// function: it falls out of re-reading state every cycle. An optimisation like
+// "skip the cycle if the config has not changed" would remove it silently,
+// which is exactly what these tests exist to prevent.
+
+func TestAnEntryLostUnderneathUsIsRestoredNextCycle(t *testing.T) {
+	client := &fakeClient{entries: map[string][]WhitelistEntry{"default": {}}}
+	r := NewReconciler(client, &stubResolver{ips: []string{"1.2.3.4"}}, 0)
+	set, err := NewUnroutableSet(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Unroutable = set
+	rule := RuleConfig{RuleID: "default", FQDNs: []string{"a.example.com"}}
+
+	r.Rule(rule)
+	if len(client.entries["default"]) != 1 {
+		t.Fatalf("first cycle should have authorised the address, got %+v", client.entries["default"])
+	}
+
+	// The entry vanishes with no error ever reported — a discarded write, or an
+	// operator deleting it by hand.
+	client.entries["default"] = []WhitelistEntry{}
+
+	res := r.Rule(rule)
+	if len(client.entries["default"]) != 1 {
+		t.Fatalf("not restored on the next cycle: %+v (added %v)", client.entries["default"], res.Added)
+	}
+}
+
+func TestARemovalUndoneUnderneathUsIsRepeatedNextCycle(t *testing.T) {
+	stale := WhitelistEntry{EntryType: 1, IP: "9.9.9.9/32", Comment: MarkerPrefix + "gone.example.com"}
+	client := &fakeClient{entries: map[string][]WhitelistEntry{"default": {stale}}}
+	r := NewReconciler(client, &stubResolver{ips: []string{"1.2.3.4"}}, 0)
+	set, err := NewUnroutableSet(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Unroutable = set
+	rule := RuleConfig{RuleID: "default", FQDNs: []string{"a.example.com"}}
+
+	r.Rule(rule)
+	// The removal is undone: the revoked entry is back, as a concurrent write
+	// upstream would leave it.
+	client.entries["default"] = append(client.entries["default"], stale)
+
+	res := r.Rule(rule)
+	for _, e := range client.entries["default"] {
+		if e.IP == stale.IP {
+			t.Fatalf("the revoked entry survived a second cycle: %+v (removed %v)",
+				client.entries["default"], res.Removed)
+		}
+	}
+}

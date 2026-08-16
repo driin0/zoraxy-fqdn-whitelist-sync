@@ -33,6 +33,14 @@ up on its own.
   one is refused and removed on the next cycle, which the panel marks
   **blocked**. This is the one thing that does revoke a provider range. The list
   is configurable.
+- **It converges, so nothing it owns stays wrong for long.** Each cycle it
+  reads the rule's whitelist and makes it match what is configured — it does
+  not apply changes and hope they stuck. An entry of its own that goes missing
+  is restored on the next tick, and one it removed that comes back is removed
+  again, whatever the cause: a hand edit, a restart, or a write discarded
+  somewhere underneath. Its exposure to anything like that is one interval,
+  thirty seconds by default. Entries it does not own are outside this, since it
+  never touches them.
 - **A provider list that cannot be fetched never revokes.** Published CDN
   ranges are refetched on their own slow timer; if a fetch fails, or returns
   anything anomalous, the ranges already authorised stay authorised and the
