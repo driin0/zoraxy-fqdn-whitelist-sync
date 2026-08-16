@@ -92,14 +92,21 @@ const (
 	// provider's endpoints, so nothing checks what a rule accumulates across
 	// several of them.
 	//
-	// Measured 2026-08-16 on the deployment target — an EPYC 7763 vCPU at
-	// GOMAXPROCS=1, not a laptop — with Cloudflare's real published list, not
-	// a synthetic stand-in: a non-matching scan of today's 22 entries costs
-	// 9.6 µs and 132 allocations, **per proxied request**. 512 entries costs
-	// 200 µs, 2,560 costs 1.12 ms, and all 16,762 of AWS costs 8.8 ms.
+	// Measured 2026-08-16 with Cloudflare's real published list, per proxied
+	// request, across the hardware Zoraxy actually ships builds for. The
+	// spread is the finding — 55x between fastest and slowest at today's 22
+	// entries, so a number from one machine says nothing about another:
 	//
-	// So 512 is not a generous ceiling, it is about the right one, and the
+	//   entries   EPYC vCPU    Pi 5     Pi 3 B+    Pi 2 B (armv7)
+	//        22      9.6 µs   17.1 µs    163 µs      224 µs
+	//       512      200 µs    410 µs   3.70 ms     5.14 ms
+	//    16,762     8.82 ms   15.1 ms    152 ms      178 ms
+	//
+	// So 512 is comfortable on a server and emphatically not on a Pi, and the
 	// megabyte-scale provider lists are disqualifying rather than merely large.
+	// Lowering this constant is still the wrong lever — halving it halves 5 ms,
+	// while the radix trie below divides it by 141 — so it stays the tripwire
+	// it was designed to be.
 	//
 	// The allocations are the part no short list escapes: they are per request,
 	// so they scale with traffic rather than with list length, and they fall on
@@ -107,9 +114,9 @@ const (
 	// early. Since this constant bounds one provider while the cost is paid on
 	// the rule's total, a second provider in the registry owes a per-rule bound.
 	//
-	// bench/whitelist-scan in the workspace repo holds the code, the guards on
-	// its own fixtures, and the radix trie zoraxy#986 asks for — flat at
-	// ~70 ns and zero allocations, 177x faster at the size that ships today.
+	// bench/whitelist-scan in the workspace repo holds the code, its fixture
+	// guards, and the radix trie zoraxy#986 asks for: zero allocations at every
+	// size, and 141x faster than the scan on the weakest machine measured.
 	providerMaxPrefixes = 512
 	// After a failure, retry sooner than the normal interval — a transient
 	// failure must not leave a provider stale for half a day — but not on every
