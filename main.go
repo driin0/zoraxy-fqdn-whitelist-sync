@@ -80,12 +80,20 @@ func main() {
 	// criterion of this plugin, not an accident of it.
 	//
 	// If that ever stops being true, the cleanup belongs *here* and not in the
-	// signal handler below. termFunc runs synchronously, before the 200 goes on
-	// the wire and therefore before Zoraxy sends SIGTERM, so this is the only
-	// window in which slow work is safe — about three seconds of it, after which
-	// Zoraxy's client times out and it force-shuts-down anyway. Make it callable
-	// from both paths (a sync.Once), because a SIGTERM can also arrive without
-	// this handler running at all: at machine shutdown, or if the GET times out.
+	// signal handler below, and on every platform. termFunc runs synchronously,
+	// before the 200 goes on the wire, and Zoraxy's GET carries a 3s client
+	// timeout — so that is the window for slow work, and it is the same on POSIX
+	// and Windows because only what happens *after* the response differs.
+	//
+	// After the response there is far less room than the POSIX path suggests.
+	// POSIX: SIGTERM, then five seconds of polling before Zoraxy kills. Windows:
+	// no signal at all, 300ms, then Kill — against the SDK's 100ms self-exit,
+	// which leaves **200ms of margin and nothing to catch** if it is missed. Any
+	// cleanup that does not fit before the response has no home on Windows.
+	//
+	// Make it callable from both paths (a sync.Once), because a SIGTERM can also
+	// arrive without this handler running at all: at machine shutdown, or if the
+	// GET times out.
 	//
 	// What it must not do is call os.Exit itself, despite the review on PR #17
 	// asking for exactly that. Exiting here happens before the response is
