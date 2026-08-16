@@ -78,18 +78,19 @@ architecture, makes it executable and places it in its own plugin folder.
 Release assets are named `fqdn_whitelist_sync_<os>_<arch>` — for example
 `fqdn_whitelist_sync_linux_amd64`, or `fqdn_whitelist_sync_windows_amd64.exe`.
 Download the one for your platform from the
-[latest release](https://github.com/driin0/zoraxy-fqdn-whitelist-sync/releases/latest),
-**rename it** to `fqdn-whitelist-sync`, and put it in Zoraxy's plugin directory
-inside a folder of the same name — Zoraxy runs the file whose name matches its
-folder:
+[latest release](https://github.com/driin0/zoraxy-fqdn-whitelist-sync/releases/latest).
 
-    plugins/
+**Zoraxy's rule is that the binary is named after the folder holding it.** The
+name itself is yours to choose — the plugin manager uses the display name,
+spaces and all — so pick one and use it for both:
+
+    plugin/
     └── fqdn-whitelist-sync/
         └── fqdn-whitelist-sync
 
-Make it executable (`chmod +x fqdn-whitelist-sync`) and restart Zoraxy. On
-Windows keep the `.exe` extension on both the folder's file and its name, and
-skip the `chmod`.
+So rename the downloaded file to match the folder you put it in, make it
+executable (`chmod +x fqdn-whitelist-sync`) and restart Zoraxy. On Windows keep
+the `.exe` on both and skip the `chmod`.
 
 If you want the icon in the plugin manager, put [`icon.png`](icon.png) in the
 same folder. Installing through the plugin manager instead fetches it for you.
@@ -97,8 +98,8 @@ same folder. Installing through the plugin manager instead fetches it for you.
 To update, replace the binary, re-apply `chmod +x`, and restart Zoraxy.
 
 If you installed manually and later switch to the plugin manager, remove your
-folder first: the manager creates its own, and two copies of the same plugin ID
-will collide.
+folder first: the manager creates its own — `plugin/FQDN Whitelist Sync/` — and
+two copies of the same plugin ID will collide.
 
 ## Configure
 
