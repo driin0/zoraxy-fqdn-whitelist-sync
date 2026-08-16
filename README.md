@@ -37,7 +37,8 @@ up on its own.
 
 ## Requirements
 
-Zoraxy v3.3.3 or later. Verified against v3.3.3 and v3.3.4-rc2.
+Zoraxy v3.3.3 or later. Verified against v3.3.3 and the v3.3.4 release
+candidates, most recently v3.3.4-rc3.
 
 Builds are published for `linux/amd64`, `linux/386`, `linux/arm`,
 `linux/arm64`, `linux/mipsle`, `linux/riscv64` and `windows/amd64` — the
