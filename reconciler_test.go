@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"reflect"
 	"strings"
@@ -34,6 +35,7 @@ type fakeClient struct {
 	added   []string
 	removed []string
 	listErr error
+	addErr  error // injected: makes every AddWhitelistIP fail
 }
 
 func (c *fakeClient) ListWhitelistIP(ruleID string) ([]WhitelistEntry, error) {
@@ -48,6 +50,9 @@ func (c *fakeClient) ListWhitelistIP(ruleID string) ([]WhitelistEntry, error) {
 func (c *fakeClient) AddWhitelistIP(ruleID, ip, comment string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.addErr != nil {
+		return c.addErr
+	}
 	c.added = append(c.added, ip)
 	for i := range c.entries[ruleID] {
 		if c.entries[ruleID][i].IP == ip {
@@ -1370,5 +1375,39 @@ func TestAFetcherReturningNothingIsTreatedAsAFailedFetchNotAnEmptySuccess(t *tes
 	}
 	if len(res.Removed) != 0 {
 		t.Errorf("removed %v — a failed fetch must never revoke", res.Removed)
+	}
+}
+
+// A legacy-form entry must not be removed when the canonical replacement could
+// not be added. The two steps are separate loops: 3a adds and skips on error,
+// 3b removes anything stored in a form that is no longer wanted. Nothing tied
+// them together, so a failed add followed by a successful remove left the
+// address authorised by neither — on a whitelist, that locks somebody out, and
+// it is exactly the outcome this plugin exists to prevent.
+func TestALegacyEntryIsKeptWhenItsReplacementCannotBeAdded(t *testing.T) {
+	client := &fakeClient{
+		entries: map[string][]WhitelistEntry{
+			"default": {{EntryType: 1, IP: "1.2.3.4", Comment: MarkerPrefix + "a.example.com"}},
+		},
+		addErr: errors.New("zoraxy is unhappy"),
+	}
+	r := NewReconciler(client, &stubResolver{ips: []string{"1.2.3.4"}}, 0)
+	set, err := NewUnroutableSet(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Unroutable = set
+
+	res := r.Rule(RuleConfig{RuleID: "default", FQDNs: []string{"a.example.com"}})
+
+	if len(res.Removed) != 0 {
+		t.Errorf("removed %v while the replacement add was failing", res.Removed)
+	}
+	left := client.entries["default"]
+	if len(left) != 1 || left[0].IP != "1.2.3.4" {
+		t.Fatalf("the address lost its authorisation entirely: %+v (errors: %v)", left, res.Errors)
+	}
+	if len(res.Errors) == 0 {
+		t.Error("the failed add should still be reported")
 	}
 }

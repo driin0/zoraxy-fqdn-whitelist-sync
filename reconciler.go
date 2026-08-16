@@ -429,23 +429,40 @@ func (r *Reconciler) Rule(rule RuleConfig) ReconcileResult {
 	// 3a. Add desired IPs not already authorised. An address already covered
 	// by an admin entry is left alone — admin entries must never be converted
 	// into plugin-owned ones by a collision.
+	// authorised records which canonical forms are actually in the whitelist
+	// once this step is done, so 3b can tell a completed replacement from a
+	// failed one.
+	authorised := map[string]bool{}
 	for ip, fqdn := range desired {
 		if adminPresent[ip] || managed[ip] == ip {
+			authorised[ip] = true
 			continue
 		}
 		if err := r.Client.AddWhitelistIP(rule.RuleID, ip, MarkerPrefix+fqdn); err != nil {
 			result.Errors = append(result.Errors, fmt.Sprintf("add %s: %v", ip, err))
 			continue
 		}
+		authorised[ip] = true
 		result.Added = append(result.Added, ip)
 	}
 
 	// 3b. Remove owned entries no longer desired, plus those still stored in a
-	// legacy non-CIDR form — their replacement was added above, so dropping
-	// them never leaves the address unauthorised in between.
+	// legacy non-CIDR form once their canonical replacement is actually in
+	// place.
+	//
+	// That last condition is not decoration. These are two separate loops, and
+	// nothing used to connect them: if the add above failed, this removed the
+	// legacy entry anyway and the address ended up authorised by neither form.
+	// On a whitelist that locks somebody out — the precise outcome the whole
+	// plugin exists to avoid — so a replacement that did not land keeps the old
+	// entry, and the failed add is already reported as an error.
+	// TestALegacyEntryIsKeptWhenItsReplacementCannotBeAdded holds this shut.
 	for canonical, stored := range managed {
 		_, want := desired[canonical]
 		if want && stored == canonical {
+			continue
+		}
+		if want && !authorised[canonical] {
 			continue
 		}
 		if err := r.Client.RemoveWhitelistIP(rule.RuleID, stored); err != nil {
