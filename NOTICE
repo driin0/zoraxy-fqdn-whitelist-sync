@@ -1,0 +1,12 @@
+FQDN Whitelist Sync — keeps Zoraxy access-control whitelists in sync with
+resolved FQDNs and published CDN provider ranges
+Copyright (C) 2026 Riccardo Riina (driin0)
+
+This program is free software: you can redistribute it and/or modify it under
+the terms of the GNU Affero General Public License as published by the Free
+Software Foundation, either version 3 of the License, or (at your option) any
+later version. See LICENSE.
+
+This program contains code copied verbatim from Zoraxy
+(https://github.com/tobychui/zoraxy), which is licensed under the same terms:
+see mod/zoraxy_plugin/.

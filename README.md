@@ -153,8 +153,14 @@ No external dependencies.
 
 ## Licence
 
-MIT — see [LICENSE](LICENSE).
+Copyright (C) 2026 Riccardo Riina (driin0)
 
-The vendored Zoraxy plugin SDK under `mod/zoraxy_plugin/` is copied unmodified
-from [Zoraxy](https://github.com/tobychui/zoraxy) and is LGPL licensed; see
-`mod/zoraxy_plugin/UPSTREAM.md`.
+**AGPL-3.0-or-later**, the same licence as Zoraxy itself.
+
+That is not only symmetry. `mod/zoraxy_plugin/` is copied verbatim from
+Zoraxy's source tree, so that code is AGPL wherever it travels; matching the
+licence means there is nothing to reconcile and no exception to maintain. See
+NOTICE.
+
+Releases up to and including v1.2.0 were published under the MIT licence.
+That grant is not withdrawn — it stands for the versions it was made under.

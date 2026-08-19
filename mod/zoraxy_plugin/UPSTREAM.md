@@ -7,10 +7,9 @@ These files are copied verbatim from the Zoraxy source tree:
 Files: `zoraxy_plugin.go`, `embed_webserver.go`
 Verified byte-identical to upstream `main` on 2026-08-09.
 
-Zoraxy's plugin documentation states that the plugin library and interface
-design are LGPL licensed, and that a plugin using the library **as-is** need
-not disclose its own source. This copy is therefore kept unmodified on
-purpose. If it ever needs changing, that changes the licence position — check
-the terms before editing anything in this directory.
+These files carry Zoraxy's licence, AGPL-3.0-or-later, wherever they travel.
+FQDN Whitelist Sync is released under the same licence for that reason, so no
+part of this repository sits under different terms from any other part.
 
-To refresh: re-copy from upstream and diff, rather than hand-patching.
+Do not edit them here. To update, re-copy from the Zoraxy source tree and diff,
+rather than hand-patching.
