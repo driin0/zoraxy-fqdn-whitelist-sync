@@ -568,77 +568,73 @@ $(function () {
 //                    (upstream PR #1211)
 //
 // Both derive the height from the viewport or the surrounding chrome, never
-// from the content, so both leave the same problem. We assume neither: the
-// height Zoraxy last set is read back and used as a floor, so a change of
-// formula can only raise that floor.
+// from the content. We reimplement neither. We write **min-height**, which
+// Zoraxy never touches, and let the layout engine take the maximum: whatever
+// it puts in `height`, the frame cannot end up shorter than the content.
 //
-// Production runs the official image, so the fix has to come from inside: the
-// plugin measures itself and grows the frame that holds it. This is a guest
-// writing into its host's layout, acceptable only because this is a
-// first-party plugin -- and written so the worst case is the scrollbar we
-// have today, never a broken page.
+// Taking the maximum in JavaScript instead -- reading the frame back, keeping
+// the host's value as a floor and overwriting `height` -- is what this used to
+// do, and it loses a race it cannot win on a phone. Below 748px main.css hides
+// .toolbar, so #mainmenu measures 0 and the formula degenerates to
+// innerHeight - 198; and innerHeight is precisely the number that changes when
+// the mobile browser's toolbar hides or reappears, which is every time the
+// scroll direction changes. Measured at 390x844 with this panel needing
+// 2781px, every toggle rewrote the frame to 586px: the document collapsed from
+// 2862px to 844px, the browser clamped the scroll offset to 0, and the
+// operator was thrown back to the top of the panel -- then a poll put it back,
+// half a second later, for the whole thing to happen again on the way up. A
+// floor is applied in the same layout pass as Zoraxy's own write, so there is
+// no window to be caught in and the frame never collapses at all.
 //
-// Four upstream details are load-bearing. Re-verified against v3.3.3, main and
+// Two upstream details are load-bearing. Re-verified against v3.3.3, main and
 // the v3.3.4 branch on 2026-08-09:
 //
 //   1. the iframe is sandboxed "allow-scripts allow-same-origin", so
 //      window.frameElement is readable at all. Losing this one breaks the
 //      mechanism outright rather than degrading it.
-//   2. resizeIframe() writes iframe.style.height directly.
-//   3. inactive tabs are hidden with display:none (.functiontab in main.css).
-//   4. no ancestor of the iframe is position:fixed.
+//   2. inactive tabs are hidden with display:none (.functiontab in main.css)
+//      and no ancestor of the iframe is position:fixed. Together those are
+//      what make offsetParent a reliable "am I on screen" question, and being
+//      on screen is what makes a measurement worth anything.
 //
-// If a future release changes any of them, re-verify -- the likely outcome is
-// that this quietly stops working.
+// Note what is no longer on that list: *how* Zoraxy writes the height. Inline,
+// through a class, from a stylesheet -- a floor outranks all three.
 //
-// Measured end to end on 2026-08-09 with the plugin installed in the official
-// Docker image, on both v3.3.3 and v3.3.4-rc2, this panel needing 940px:
+// The phone is the sharp case, not the only one. Measured in the official
+// Docker image on 2026-08-09, on both v3.3.3 and v3.3.4-rc2, with this panel
+// needing 940px on a desktop viewport: with the sidebar expanded Zoraxy's own
+// height is 1122px, the panel already fits and the floor changes nothing;
+// collapsed, it drops to 642px and 298px of the panel would be cut off.
+// Collapsing the menu groups is enough to reach that on any version.
 //
-//   sidebar expanded   the floor is 1122px, the panel already fits and this
-//                      code changes nothing.
-//   sidebar collapsed  the floor drops to 642px, and 298px of the panel would
-//                      be cut off. The frame was grown to exactly 940px, with
-//                      no inner scrollbar.
+// The host could do this properly -- resizeIframe() carrying a height the
+// plugin reports as one more term in its max(), which would fix it for every
+// plugin rather than this one. That needs a message format upstream has not
+// agreed to, so the panel does not invent one: a floor needs no cooperation
+// from the host, and works on the version already installed.
 //
-// The floor tracks how the operator left the sidebar, not the Zoraxy version:
-// collapsing the menu groups is enough to trigger it on any version. That is
-// the case this exists for, and it is why the code reads back the height
-// Zoraxy set instead of reimplementing the formula above.
-//
-// Two deliberate restrictions keep this simple enough to reason about:
-//
-//   It never fights Zoraxy for the frame. Whenever the frame is a size we
-//   did not set, that size is Zoraxy's own choice and becomes the floor; we
-//   only ever extend past it, and we compare against the height we actually
-//   observed after writing, so rounding cannot make us mistake our own value
-//   for a new one.
-//
-//   It polls instead of listening. Reacting to resize events meant recovering
-//   from a tab switch that may not fire an event at all in a hidden frame.
-//   Re-asserting on a timer needs no events, and lets the frame follow the
-//   content back down when a rule's FQDNs are removed.
+// The frame is shared by every plugin -- Zoraxy swaps the iframe's src and
+// nothing else -- so the floor is released when this document goes away.
+// Without that, the next plugin opened would inherit ours.
 
-const FRAME_HEIGHT_SLACK = 12;   // absorbs sub-pixel rounding at the bottom edge
-const FRAME_SYNC_INTERVAL_MS = 1000;
+const FRAME_HEIGHT_SLACK = 12;          // absorbs sub-pixel rounding at the bottom edge
+const FRAME_RESYNC_INTERVAL_MS = 2000;  // safety net; the observer does the real work
 
-let appliedFrameHeight = null;   // height observed right after our own write
-let hostFrameHeight = 0;         // the height Zoraxy last chose, used as a floor
+function pluginFrame() {
+    try {
+        return window.frameElement; // null, or throws, if not embedded
+    } catch (e) {
+        return null;
+    }
+}
 
 function syncFrameHeight() {
-    let frame;
-    try {
-        frame = window.frameElement; // null, or throws, if not embedded
-    } catch (e) {
-        return;
-    }
+    const frame = pluginFrame();
     if (!frame || !frame.style) return;
     // Zoraxy hides the plugin tab with CSS rather than unloading the iframe.
-    // Measuring a hidden element yields zeroes, which would poison the floor.
+    // Measuring a hidden element yields zeroes, which would drop the floor to
+    // nothing in the moment before the tab is shown again.
     if (!frame.offsetParent) return;
-
-    if (frame.clientHeight !== appliedFrameHeight) {
-        hostFrameHeight = frame.clientHeight;
-    }
 
     // Measure the container, not document.body: the rule selector's Semantic
     // dropdown is an absolutely-positioned overlay, which the root scrolling
@@ -649,14 +645,43 @@ function syncFrameHeight() {
 
     const needed = Math.ceil(content.getBoundingClientRect().bottom + window.scrollY)
         + FRAME_HEIGHT_SLACK;
-    const wanted = Math.max(needed, hostFrameHeight);
-    if (wanted !== frame.clientHeight) {
-        frame.style.height = wanted + "px";
-        appliedFrameHeight = frame.clientHeight;
+
+    // Compared against the live value rather than a remembered one, so that a
+    // floor cleared by anything at all is re-asserted rather than assumed.
+    if (frame.style.minHeight !== needed + "px") {
+        frame.style.minHeight = needed + "px";
     }
+}
+
+// Giving the floor back is for a document that is really being replaced. It is
+// not what pagehide always means: the event also fires with `persisted` set for
+// a document on its way into the back/forward cache, and on iOS for one whose
+// app is merely being backgrounded -- both of which come back, with this same
+// panel in them. Clearing the floor there would leave the frame collapsed until
+// the next tick, which is the failure this whole mechanism exists to remove,
+// reached by switching apps instead of by scrolling.
+function releaseFrameHeight(e) {
+    if (e && e.persisted) return;
+    const frame = pluginFrame();
+    if (frame && frame.style) frame.style.minHeight = "";
 }
 
 function startFrameHeightSync() {
     syncFrameHeight();
-    setInterval(syncFrameHeight, FRAME_SYNC_INTERVAL_MS);
+    const content = document.querySelector(".standardContainer");
+    if (content && window.ResizeObserver) {
+        // The content is the only thing the floor depends on, so it is the one
+        // thing worth watching -- and the callback runs before paint, so a rule
+        // that gains twenty FQDNs never shows a scrollbar on the way to fitting.
+        new ResizeObserver(syncFrameHeight).observe(content);
+    }
+    // Insurance for the one case an observer cannot see: a tab switch that
+    // re-shows a frame whose content never changed while it was hidden.
+    setInterval(syncFrameHeight, FRAME_RESYNC_INTERVAL_MS);
+    window.addEventListener("pagehide", releaseFrameHeight);
+    // The two ways a document that was put away comes back. Re-asserting here
+    // costs one comparison when nothing changed, and closes the window in which
+    // the frame would sit at Zoraxy's height waiting for the timer.
+    window.addEventListener("pageshow", syncFrameHeight);
+    document.addEventListener("visibilitychange", syncFrameHeight);
 }
