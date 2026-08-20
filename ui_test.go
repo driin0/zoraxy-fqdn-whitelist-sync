@@ -317,3 +317,85 @@ func TestPanelDescribesARevocationAsARevocationNotAFailedRefresh(t *testing.T) {
 		}
 	}
 }
+
+// Zoraxy sizes the plugin iframe from the viewport and rewrites that height on
+// every window resize (components/plugincontext.html). Writing `height` from
+// the panel means two writers on one property, settled by whoever ran last —
+// a race this side loses on a phone, where main.css hides .toolbar below 748px,
+// so #mainmenu measures 0 and the formula degenerates to innerHeight - 198.
+// That number changes every time the mobile browser's toolbar hides or
+// reappears, which is every time the scroll direction changes. Measured at
+// 390x844 with this panel needing 2781px: the frame was rewritten to 586px, the
+// document fell from 2862px to 844px, and the browser clamped the scroll offset
+// to 0 — the operator thrown back to the top of the panel, twice per scroll.
+//
+// A floor cannot lose that race. min-height is a property Zoraxy never writes,
+// and the layout engine takes the maximum of the two in the same pass that
+// applies Zoraxy's own, so there is no window to be caught in. What this guards
+// is the one line that would quietly put the panel back in the race.
+func TestPanelFloorsTheFrameInsteadOfSettingItsHeight(t *testing.T) {
+	b, err := content.ReadFile("www/app.js")
+	if err != nil {
+		t.Fatalf("reading embedded app.js: %v", err)
+	}
+	src := string(b)
+
+	// Assignments, not the word: the comment above this code discusses
+	// iframe.style.height at length, and a guard matching the substring would
+	// fail the build over a sentence while letting setProperty("height", ...)
+	// through — guarding the vocabulary instead of the behaviour.
+	for _, form := range []string{
+		`\.style\.height\s*=`,
+		`\.style\s*\[\s*["']height["']\s*\]\s*=`,
+		`setProperty\(\s*["']height["']`,
+	} {
+		if regexp.MustCompile(form).MatchString(src) {
+			t.Errorf("app.js assigns the frame's height again (matched %s) — that is a race with Zoraxy's resizeIframe(), and on a phone it collapses the panel and loses the scroll position on every change of scroll direction", form)
+		}
+	}
+	// Assigned a measurement, not merely mentioned: releaseFrameHeight clears the
+	// same property with "", which would satisfy a test that only looked for the
+	// name and leave the floor never written at all.
+	if !regexp.MustCompile(`\.style\.minHeight\s*=\s*[^;]*\+\s*"px"`).MatchString(src) {
+		t.Error("app.js no longer floors the frame with a measured height — a panel taller than Zoraxy's viewport formula is back to scrolling inside the tab instead of extending it")
+	}
+}
+
+// Zoraxy swaps the iframe's src and nothing else: #pluginContextLoader is one
+// element shared by every plugin. A floor left on it outlives this document and
+// is inherited by whatever the operator opens next, which then sits in a frame
+// sized for a panel that is no longer there. The floor is ours only for as long
+// as we are loaded, and giving it back is not optional.
+//
+// The half that is easy to get wrong is *when*. pagehide does not only mean "on
+// my way out": it fires with persisted set for a document entering the
+// back/forward cache, and on iOS for one whose app is being backgrounded — both
+// of which come back with this same panel in them. Releasing the floor there
+// leaves the frame at Zoraxy's viewport height until the next timer tick, which
+// is the collapse this whole mechanism exists to remove, reached by switching
+// apps rather than by scrolling. So the lifecycle is four things, not one, and
+// each is matched as code rather than as a word: the prose above them names
+// every one of these events, and a substring test would pass on the comment
+// alone while the listeners were gone.
+func TestPanelReleasesTheSharedFrameWhenItGoesAway(t *testing.T) {
+	b, err := content.ReadFile("www/app.js")
+	if err != nil {
+		t.Fatalf("reading embedded app.js: %v", err)
+	}
+	src := string(b)
+
+	for _, required := range []struct{ pattern, missing string }{
+		{`addEventListener\(\s*["']pagehide["']`,
+			"app.js no longer listens for pagehide — the min-height it wrote stays on the shared frame and the next plugin opened inherits it"},
+		{`\.style\.minHeight\s*=\s*""`,
+			"nothing clears the frame's min-height — a listener that does not release the floor leaves it on the shared frame just the same"},
+		{`e\.persisted`,
+			"the release no longer spares a document that is coming back — entering the back/forward cache, or backgrounding the app on iOS, now collapses the frame until the next timer tick"},
+		{`addEventListener\(\s*["']pageshow["']`,
+			"nothing re-floors the frame when a put-away document is shown again — the recovery is back to waiting for the timer"},
+	} {
+		if !regexp.MustCompile(required.pattern).MatchString(src) {
+			t.Error(required.missing)
+		}
+	}
+}
