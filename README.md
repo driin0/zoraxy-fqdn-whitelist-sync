@@ -164,3 +164,29 @@ NOTICE.
 
 Releases up to and including v1.2.0 were published under the MIT licence.
 That grant is not withdrawn — it stands for the versions it was made under.
+
+The licence text travels inside the binary. Release assets are bare binaries —
+Zoraxy's registry indexer builds direct download URLs, so nothing can be
+wrapped in an archive carrying a LICENSE beside it — and AGPL §4, reached
+through §6, requires a copy of the License to reach whoever receives the object
+code. LICENSE and NOTICE are therefore embedded and served by the running
+plugin:
+
+| Path | Serves |
+| --- | --- |
+| `/plugin.ui/io.github.driin0.zoraxy.fqdn_whitelist_sync/license` | the AGPL-3.0 text |
+| `/plugin.ui/io.github.driin0.zoraxy.fqdn_whitelist_sync/notice` | NOTICE |
+
+Both are relative to the Zoraxy admin origin: Zoraxy strips `/plugin.ui/<id>`
+and proxies what is left onto the plugin's own `/ui`, so the `/ui` does not
+appear in the address.
+
+The offer of the complete corresponding source that AGPL §13 requires of a
+program used over a network is the repository link in Zoraxy's plugin manager,
+which comes from this plugin's own `.introspect` declaration. It is not
+repeated inside the panel: Zoraxy sandboxes the plugin iframe
+`allow-scripts allow-same-origin`, so a link with `target="_blank"` is blocked
+for want of `allow-popups` and does nothing at all when clicked, while
+navigating the frame to GitHub is refused by its `frame-ancestors 'none'`. A
+link that looks right and silently does nothing is a worse offer than the
+working one the plugin manager already shows.

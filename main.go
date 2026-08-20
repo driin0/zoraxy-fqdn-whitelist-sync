@@ -20,7 +20,10 @@ const (
 	CONFIG_PATH = "config.json"
 )
 
-//go:embed www/*
+// LICENSE and NOTICE ride along with the panel: the release assets are bare
+// binaries, so the text has nowhere else to travel. See license.go.
+//
+//go:embed www/* LICENSE NOTICE
 var content embed.FS
 
 func main() {
@@ -62,6 +65,8 @@ func main() {
 
 	api := &APIServer{Store: store, Status: status, Rules: client, Trigger: trigger, ForceProviders: force}
 	api.Register(UI_PATH)
+
+	RegisterLicenceRoutes(UI_PATH)
 
 	uiRouter := plugin.NewPluginEmbedUIRouter(PLUGIN_ID, &content, WEB_ROOT, UI_PATH)
 	uiRouter.AttachHandlerToMux(nil)
